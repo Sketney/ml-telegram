@@ -62,3 +62,31 @@ class Draft(Base):
     @property
     def has_errors(self) -> bool:
         return any(i.get("level") == "error" for i in (self.issues or []))
+
+
+class ItemStatus(str, enum.Enum):
+    NEW = "new"  # собран, ещё не оценён
+    RANKED = "ranked"  # оценён, автору не показывали
+    OFFERED = "offered"  # был в дайджесте
+    USED = "used"  # по нему создан черновик
+    HIDDEN = "hidden"  # автор скрыл
+
+
+class SourceItem(Base):
+    """Материал из внешнего источника: кандидат в тему для рубрик «по источникам»."""
+
+    __tablename__ = "source_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str] = mapped_column(String(64), index=True)  # hf_papers, hf_models, github, rss:<имя>
+    rubric: Mapped[str] = mapped_column(String(32), index=True)
+    url: Mapped[str] = mapped_column(String(600), unique=True)
+    title: Mapped[str] = mapped_column(String(500))
+    summary: Mapped[str] = mapped_column(Text, default="")
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    score_reason: Mapped[str] = mapped_column(String(400), default="")
+    status: Mapped[str] = mapped_column(String(16), default=ItemStatus.NEW.value, index=True)
+    topic_id: Mapped[int | None] = mapped_column(ForeignKey("topics.id"), nullable=True, index=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from html import escape
 from typing import Protocol
 
 from app.config import Settings
@@ -68,6 +69,11 @@ class FakeLLM:
     async def complete(self, system: str, user: str, *, cheap: bool = False) -> str:
         self.calls.append((system, user))
         topic = _extract_topic(user)
+        if '"items"' in system:  # запрос на оценку кандидатов из источников
+            rows = json.loads(user[user.index("[") :])
+            return json.dumps(
+                {"items": [{"id": r["id"], "score": 7, "why": "заглушка FakeLLM"} for r in rows]}, ensure_ascii=False
+            )
         if '"question"' in system:
             return json.dumps(
                 {
@@ -78,12 +84,17 @@ class FakeLLM:
                 },
                 ensure_ascii=False,
             )
+        own_block = ""  # рубрики с блоком, который автор вписывает сам
+        for name in ("Мой опыт", "Моё мнение"):
+            if "{" + name + "}" in system:
+                own_block = f"<b>{name}:</b> {{{name}}}\n\n"
         return json.dumps(
             {
                 "html": (
-                    f"<b>[заглушка] {topic}</b>\n\n"
+                    f"<b>[заглушка] {escape(topic)}</b>\n\n"
                     "Это текст от FakeLLM: он проверяет, что бот, кнопки и расписание работают. "
                     "Поставь LLM_PROVIDER=anthropic или openai в .env, чтобы получать настоящие черновики.\n\n"
+                    f"{own_block}"
                     "<blockquote expandable>Здесь будет блок с нюансами.</blockquote>"
                 )
             },

@@ -9,13 +9,15 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import moderation
 from app.models import Draft, DraftStatus, Topic
 from app.publisher import send_preview
 from app.rubrics import get_rubric
+from app.validator import find_placeholders
 
 
 class DraftAction(CallbackData, prefix="d"):
-    action: str  # pub | ok | edit | regen | regenc | later | no
+    action: str  # pub | ok | fill | edit | regen | regenc | later | no
     draft_id: int
 
 
@@ -38,9 +40,12 @@ def draft_keyboard(draft: Draft) -> InlineKeyboardMarkup | None:
     rows: list[list[InlineKeyboardButton]] = []
     if not draft.has_errors:
         first = [btn("✅ Сейчас", "pub")]
-        if draft.status != DraftStatus.APPROVED.value:
+        if draft.status != DraftStatus.APPROVED.value and moderation.has_slot(draft.rubric):
             first.append(btn("🕒 В расписание", "ok"))
         rows.append(first)
+    placeholders = draft_placeholders(draft)
+    if placeholders:
+        rows.append([btn(f"🧩 Вписать: {placeholders[0].strip('{}')}"[:40], "fill")])
     second = [btn("🔄 Заново", "regen"), btn("💬 С комментарием", "regenc")]
     if draft.payload.get("kind") == "post":
         second.insert(0, btn("✏️ Править", "edit"))
@@ -50,6 +55,13 @@ def draft_keyboard(draft: Draft) -> InlineKeyboardMarkup | None:
         last.insert(0, btn("⏸ Отложить", "later"))
     rows.append(last)
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def draft_placeholders(draft: Draft) -> list[str]:
+    """Блоки, которые автор должен вписать сам: {Мой опыт}, {Моё мнение}."""
+    if draft.payload.get("kind") != "post":
+        return []
+    return find_placeholders(draft.payload.get("html") or "")
 
 
 async def card_text(session: AsyncSession, draft: Draft, note: str = "") -> str:
@@ -64,7 +76,9 @@ async def card_text(session: AsyncSession, draft: Draft, note: str = "") -> str:
     for i in draft.issues or []:
         mark = "⛔️" if i["level"] == "error" else "⚠️"
         lines.append(f"{mark} {escape(i['text'])}")
-    if draft.has_errors:
+    if draft_placeholders(draft):
+        lines.append("Публикация закрыта, пока не вписан твой блок: кнопка 🧩 ниже.")
+    elif draft.has_errors:
         lines.append("Публикация закрыта, пока есть ⛔️: поправь текст или перегенерируй.")
     if note:
         lines.append(f"\n{escape(note)}")

@@ -5,10 +5,12 @@ import contextlib
 
 import pytest
 
-from app import db, generator
+from app import db, generator, moderation
 from app.config import Settings
 from app.llm import FakeLLM
 from app.main import make_bot, make_dispatcher
+from app.sources import service as sources_service
+from app.sources.collectors import SourcesConfig
 from tests.mock_telegram import MockTelegram
 
 ADMIN = 4242
@@ -29,6 +31,28 @@ def settings(tmp_path) -> Settings:
     )
 
 
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Тесты не ходят в сеть: текст источника и сбор подменяются."""
+
+    async def fake_grounding(item):
+        return f"ТЕКСТ ИСТОЧНИКА: {item.title}. " + "Подробности из источника. " * 20, "тестовый текст"
+
+    async def fake_collect(cfg, now=None):
+        raise AssertionError("тест должен подменить сбор источников сам")
+
+    monkeypatch.setattr(sources_service, "grounding_for", fake_grounding)
+    monkeypatch.setattr(sources_service, "collect", fake_collect)
+    moderation.set_slotted_rubrics(None)
+    yield
+    moderation.set_slotted_rubrics(None)
+
+
+@pytest.fixture
+def sources_cfg() -> SourcesConfig:
+    return SourcesConfig(digest_top=3, min_score=6, max_age_days=14)
+
+
 @pytest.fixture
 async def database(settings):
     db.init_engine(settings.database_url)
@@ -45,15 +69,15 @@ def llm() -> FakeLLM:
 
 
 @pytest.fixture
-async def tg(settings, database, llm):
+async def tg(settings, database, llm, sources_cfg):
     """Запущенный бот, подключённый к мок-серверу Telegram."""
     mock = MockTelegram()
     await mock.start()
     settings.telegram_api_base = mock.base
     bot = make_bot(settings)
-    dp = make_dispatcher(settings, llm)
+    dp = make_dispatcher(settings, llm, sources_cfg)
     polling = asyncio.create_task(dp.start_polling(bot, handle_signals=False, polling_timeout=1))
-    mock.bot = bot
+    mock.bot, mock.llm, mock.cfg = bot, llm, sources_cfg
     try:
         yield mock
     finally:

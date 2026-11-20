@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     quiz_show_answer_option: bool = True
 
     schedule_file: str = str(DATA_DIR / "schedule.yaml")
+    sources_file: str = str(DATA_DIR / "sources.yaml")
 
     def model_for(self, cheap: bool = False) -> str:
         explicit = self.llm_model_cheap if cheap else self.llm_model

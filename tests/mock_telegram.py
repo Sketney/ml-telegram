@@ -158,6 +158,13 @@ class MockTelegram:
             else:
                 msg.pop("reply_markup", None)
             return self._ok(msg)
+        if method == "editMessageReplyMarkup":
+            msg = self.messages[int(params["message_id"])]
+            if params.get("reply_markup"):
+                msg["reply_markup"] = params["reply_markup"]
+            else:
+                msg.pop("reply_markup", None)
+            return self._ok(msg)
         return self._ok(True)  # answerCallbackQuery, setMyCommands, deleteWebhook…
 
     def _store(self, params: dict, **content: Any) -> dict:

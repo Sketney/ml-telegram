@@ -15,11 +15,14 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
 from app import db, generator, moderation
-from app.bot.cards import STATUS_LABELS, DraftAction, card_text, draft_keyboard, send_card
+from app.bot.cards import STATUS_LABELS, DraftAction, card_text, draft_keyboard, draft_placeholders, send_card
+from app.bot.digest import ItemAction, send_digest, without_item
 from app.config import Settings
 from app.llm import LLM
-from app.models import Draft, Topic, TopicStatus
+from app.models import Draft, ItemStatus, SourceItem, Topic, TopicStatus
 from app.rubrics import load_rubrics
+from app.sources import service as sources
+from app.sources.collectors import SourcesConfig
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +37,17 @@ class RegenComment(StatesGroup):
     waiting = State()
 
 
-def rubric_list() -> str:
-    return "\n".join(f"<code>{key}</code> — {escape(r.title)}" for key, r in load_rubrics().items())
+class FillPlaceholder(StatesGroup):
+    waiting = State()
+
+
+def rubric_list(source: str = "backlog") -> str:
+    return "\n".join(
+        f"<code>{key}</code> — {escape(r.title)}" for key, r in load_rubrics().items() if r.source == source
+    )
+
+
+FEED_HINT = "Эта рубрика пишется по материалам из источников: выбери кандидата в /digest."
 
 
 HELP = (
@@ -47,8 +59,11 @@ HELP = (
     "/topics — сколько тем осталось\n"
     "/queue — черновики в работе\n"
     "/show <code>номер</code> — показать черновик ещё раз\n"
+    "/digest — кандидаты из источников: статьи, релизы, инструменты\n"
+    "/fetch — собрать источники сейчас\n"
     "/cancel — отменить ввод\n\n"
-    "<b>Рубрики</b>\n{rubrics}"
+    "<b>Рубрики по бэклогу</b>\n{rubrics}\n\n"
+    "<b>Рубрики по источникам</b> (через /digest)\n{feed_rubrics}"
 )
 
 
@@ -61,7 +76,7 @@ def build_router(admin_id: int) -> Router:
 
     @router.message(Command("start", "help"))
     async def cmd_help(message: Message) -> None:
-        await message.answer(HELP.format(rubrics=rubric_list()), parse_mode="HTML")
+        await message.answer(HELP.format(rubrics=rubric_list(), feed_rubrics=rubric_list("feed")), parse_mode="HTML")
 
     @router.message(Command("cancel"))
     async def cmd_cancel(message: Message, state: FSMContext) -> None:
@@ -82,6 +97,9 @@ def build_router(admin_id: int) -> Router:
         rubric, _, title = (command.args or "").partition(" ")
         if rubric not in load_rubrics() or not title.strip():
             await message.answer("Формат: /add <code>рубрика тема</code>\n\n" + rubric_list(), parse_mode="HTML")
+            return
+        if load_rubrics()[rubric].source == "feed":
+            await message.answer(FEED_HINT)
             return
         async with db.session() as s:
             topic = await generator.add_topic(s, rubric, title)
@@ -124,6 +142,9 @@ def build_router(admin_id: int) -> Router:
         if rubric not in load_rubrics():
             await message.answer("Формат: /gen <code>рубрика [тема]</code>\n\n" + rubric_list(), parse_mode="HTML")
             return
+        if load_rubrics()[rubric].source == "feed":
+            await message.answer(FEED_HINT)
+            return
         await message.answer("Готовлю черновик…")
         async with db.session() as s:
             try:
@@ -147,6 +168,74 @@ def build_router(admin_id: int) -> Router:
                 await message.answer(f"Не получилось сгенерировать: {e}")
                 return
             await send_card(bot, message.chat.id, s, draft)
+
+    # --- источники ----------------------------------------------------------
+
+    @router.message(Command("digest"))
+    async def cmd_digest(message: Message, bot: Bot, sources_cfg: SourcesConfig) -> None:
+        async with db.session() as s:
+            shown = await send_digest(bot, message.chat.id, s, sources_cfg, include_offered=True)
+        if not shown:
+            await message.answer("Кандидатов пока нет. /fetch — собрать источники сейчас.")
+
+    @router.message(Command("fetch"))
+    async def cmd_fetch(message: Message, bot: Bot, llm: LLM, sources_cfg: SourcesConfig) -> None:
+        if not sources_cfg.enabled:
+            await message.answer("Источники выключены: проверь data/sources.yaml.")
+            return
+        await message.answer("Собираю и оцениваю источники, это около минуты…")
+        async with db.session() as s:
+            try:
+                report = await sources.collect_and_rank(s, llm, sources_cfg)
+            except Exception as e:
+                log.exception("сбор источников не удался")
+                await message.answer(f"Не получилось собрать источники: {e}")
+                return
+            text = f"Новых материалов: {report.new}, оценено: {report.ranked}."
+            if report.errors:
+                text += "\nНе ответили:\n" + "\n".join(f"• {e}" for e in report.errors)
+            await message.answer(text[:4000])
+            shown = await send_digest(bot, message.chat.id, s, sources_cfg, include_offered=False)
+        if not shown:
+            await message.answer("Новых кандидатов выше порога нет. /digest — показать прежних.")
+
+    @router.callback_query(ItemAction.filter())
+    async def on_item(cb: CallbackQuery, callback_data: ItemAction, bot: Bot, settings: Settings, llm: LLM) -> None:
+        async with db.session() as s:
+            item = await s.get(SourceItem, callback_data.item_id)
+            if item is None:
+                await cb.answer("Материал не найден.", show_alert=True)
+                return
+            if item.status in (ItemStatus.USED.value, ItemStatus.HIDDEN.value):
+                await cb.answer("Этот кандидат уже обработан.", show_alert=True)
+                return
+            remaining = without_item(cb.message.reply_markup, item.id)
+            if callback_data.action == "hide":
+                item.status = ItemStatus.HIDDEN.value
+                await s.commit()
+                await cb.answer("Скрыл, больше не предложу")
+                await cb.message.edit_reply_markup(reply_markup=remaining)
+                return
+            if callback_data.action != "write":
+                await cb.answer("Неизвестное действие.")
+                return
+            await cb.answer("Читаю источник и готовлю черновик…")
+            item_id, rubric = item.id, item.rubric
+            try:
+                topic = await generator.topic_from_item(s, item)
+                draft = await generator.generate_draft(s, llm, settings, rubric, topic)
+            except Exception as e:
+                log.exception("черновик по материалу %s не удался", item_id)
+                await s.rollback()
+                item = await s.get(SourceItem, item_id)
+                if item and item.status == ItemStatus.USED.value:  # вернуть кандидата, чтобы можно было повторить
+                    item.status = ItemStatus.OFFERED.value
+                    await s.commit()
+                reason = "по нему уже есть черновик, смотри /queue" if isinstance(e, generator.TopicTaken) else e
+                await cb.message.answer(f"Не получилось подготовить черновик: {reason}")
+                return
+            await cb.message.edit_reply_markup(reply_markup=remaining)
+            await send_card(bot, cb.message.chat.id, s, draft)
 
     # --- кнопки под черновиком ---------------------------------------------
 
@@ -178,6 +267,20 @@ def build_router(admin_id: int) -> Router:
                 elif action == "no":
                     await moderation.reject(s, draft)
                     await cb.answer("Отклонил, тема больше не всплывёт")
+                elif action == "fill":
+                    moderation.ensure_open(draft)
+                    placeholders = draft_placeholders(draft)
+                    if not placeholders:
+                        await cb.answer("Все блоки уже вписаны.", show_alert=True)
+                        return
+                    await state.set_state(FillPlaceholder.waiting)
+                    await state.update_data(draft_id=draft.id, placeholder=placeholders[0])
+                    await cb.answer()
+                    await cb.message.answer(
+                        f"Напиши текст для блока «{placeholders[0].strip('{}')}» в черновике #{draft.id}: "
+                        "2–3 строки своими словами. /cancel — отмена."
+                    )
+                    return
                 elif action == "edit":
                     moderation.ensure_open(draft)
                     await state.set_state(EditText.waiting)
@@ -270,7 +373,23 @@ def build_router(admin_id: int) -> Router:
                 return
             await send_card(bot, message.chat.id, s, draft)
 
-    @router.message(StateFilter(EditText.waiting, RegenComment.waiting))
+    @router.message(StateFilter(FillPlaceholder.waiting), F.text, ~F.text.startswith("/"))
+    async def on_fill(message: Message, state: FSMContext, bot: Bot) -> None:
+        data = await state.get_data()
+        await state.clear()
+        async with db.session() as s:
+            draft = await s.get(Draft, data.get("draft_id"))
+            if draft is None:
+                await message.answer("Черновик не найден.")
+                return
+            try:
+                await moderation.fill_placeholder(s, draft, data.get("placeholder") or "", message.html_text)
+            except moderation.NotAllowed as e:
+                await message.answer(f"Нельзя: {e}")
+                return
+            await send_card(bot, message.chat.id, s, draft, note="Твой блок вписан.")
+
+    @router.message(StateFilter(EditText.waiting, RegenComment.waiting, FillPlaceholder.waiting))
     async def on_not_text(message: Message) -> None:
         await message.answer("Жду текст одним сообщением. /cancel — отмена.")
 

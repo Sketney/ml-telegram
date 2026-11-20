@@ -101,6 +101,14 @@ class _TgHtmlParser(HTMLParser):
             self.prose.append(data)
 
 
+def find_placeholders(html: str) -> list[str]:
+    """Незаполненные заглушки вида {Мой опыт} в тексте поста (код не считается)."""
+    parser = _TgHtmlParser()
+    parser.feed(html)
+    parser.close()
+    return list(dict.fromkeys(_PLACEHOLDER_RE.findall("".join(parser.prose))))
+
+
 def validate_post_html(html: str, *, min_len: int = 0, max_len: int = TG_TEXT_LIMIT) -> list[dict]:
     issues: list[dict] = []
     if not html.strip():

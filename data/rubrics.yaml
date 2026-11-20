@@ -20,3 +20,31 @@ quiz:
   title: Квиз
   hashtag: "#quiz"
   kind: quiz
+
+# --- Рубрики по источникам (source: feed) -------------------------------------
+# Темы для них не берутся из бэклога: бот собирает материалы (data/sources.yaml),
+# присылает дайджест кандидатов, а черновик пишется по тексту выбранного источника.
+
+paper:
+  title: Разбор статьи
+  hashtag: "#paper"
+  kind: post
+  source: feed
+  min_len: 1500
+  max_len: 3000
+
+release:
+  title: Релиз с разбором
+  hashtag: "#release"
+  kind: post
+  source: feed
+  min_len: 1200
+  max_len: 2500
+
+tool:
+  title: Инструмент недели
+  hashtag: "#tool"
+  kind: post
+  source: feed
+  min_len: 1500
+  max_len: 2500

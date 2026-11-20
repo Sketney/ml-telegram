@@ -10,7 +10,7 @@ from app.config import Settings
 from app.models import Draft, DraftStatus, Topic, TopicStatus, utcnow
 from app.publisher import send_draft
 from app.rubrics import get_rubric
-from app.validator import validate_payload
+from app.validator import find_placeholders, validate_payload
 
 
 class NotAllowed(Exception):
@@ -18,6 +18,18 @@ class NotAllowed(Exception):
 
 
 OPEN_STATUSES = (DraftStatus.PENDING.value, DraftStatus.APPROVED.value, DraftStatus.POSTPONED.value)
+
+# Рубрики, у которых есть слот в расписании. None — расписание не загружено (тесты, скрипты): не ограничиваем.
+_slotted: set[str] | None = None
+
+
+def set_slotted_rubrics(rubrics: set[str] | None) -> None:
+    global _slotted
+    _slotted = rubrics
+
+
+def has_slot(rubric: str) -> bool:
+    return _slotted is None or rubric in _slotted
 
 
 def channel_chat_id(settings: Settings) -> int | str:
@@ -40,6 +52,11 @@ def _ensure_publishable(draft: Draft) -> None:
 async def approve(session: AsyncSession, draft: Draft) -> Draft:
     """В очередь: выйдет в ближайший слот своей рубрики."""
     _ensure_publishable(draft)
+    if not has_slot(draft.rubric):
+        raise NotAllowed(
+            f"у рубрики «{get_rubric(draft.rubric).title}» нет слота в расписании: "
+            "публикуй кнопкой «Сейчас» или добавь слот в data/schedule.yaml"
+        )
     draft.status = DraftStatus.APPROVED.value
     draft.approved_at = utcnow()
     await session.commit()
@@ -90,10 +107,21 @@ async def set_text(session: AsyncSession, draft: Draft, html: str) -> Draft:
     return draft
 
 
-async def next_approved(session: AsyncSession, rubric: str) -> Draft | None:
+async def fill_placeholder(session: AsyncSession, draft: Draft, placeholder: str, html_fragment: str) -> Draft:
+    """Подставляет текст автора вместо заглушки вида {Мой опыт}."""
+    ensure_open(draft)
+    html = draft.payload.get("html") or ""
+    if draft.payload.get("kind") != "post" or placeholder not in find_placeholders(html):
+        raise NotAllowed(f"в черновике уже нет заглушки {placeholder}")
+    return await set_text(session, draft, html.replace(placeholder, html_fragment.strip(), 1))
+
+
+async def next_approved(session: AsyncSession, rubrics: str | tuple[str, ...]) -> Draft | None:
+    """Самый давно одобренный черновик из перечисленных рубрик."""
+    keys = (rubrics,) if isinstance(rubrics, str) else tuple(rubrics)
     return await session.scalar(
         select(Draft)
-        .where(Draft.rubric == rubric, Draft.status == DraftStatus.APPROVED.value)
+        .where(Draft.rubric.in_(keys), Draft.status == DraftStatus.APPROVED.value)
         .order_by(Draft.approved_at, Draft.id)
         .limit(1)
     )

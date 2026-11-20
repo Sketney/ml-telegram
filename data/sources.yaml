@@ -1,0 +1,37 @@
+# Источники для рубрик «Разбор статьи» (paper), «Релиз с разбором» (release) и «Инструмент недели» (tool).
+#
+# Раз в день в collect_at бот обходит источники, новые материалы оценивает дешёвой моделью (0–10)
+# и присылает дайджест: по digest_top лучших на рубрику с оценкой не ниже min_score.
+# Собрать вне расписания: /fetch. Посмотреть кандидатов ещё раз: /digest.
+
+collect_at: "16:00"   # в часовом поясе TIMEZONE из .env
+digest_top: 3
+min_score: 6
+max_age_days: 14      # старше — не собираем и не предлагаем
+
+hf_papers:            # статьи дня на Hugging Face → paper
+  enabled: true
+  limit: 50
+
+hf_models:            # модели в тренде на Hugging Face → release
+  enabled: true
+  limit: 30
+  pipeline_tags: [text-generation, image-text-to-text]
+  min_likes: 50
+  max_age_days: 45
+
+github:               # новые репозитории с быстрым ростом звёзд → tool
+  enabled: true
+  queries: ["topic:llm", "topic:rag", "topic:ai-agents", "topic:mlops"]
+  created_within_days: 60
+  min_stars: 500
+  per_query: 10
+
+rss_limit: 20         # сколько последних записей брать из каждой ленты
+rss:
+  # Лента OpenAI (https://openai.com/news/rss.xml) не подключена: сами страницы новостей отдают боту 403,
+  # и писать пост пришлось бы по одной строке анонса.
+  - { name: "Mistral AI", url: "https://mistral.ai/rss.xml", rubric: release }
+  - { name: "Google DeepMind", url: "https://deepmind.google/blog/rss.xml", rubric: release }
+  - { name: "Hugging Face Blog", url: "https://huggingface.co/blog/feed.xml", rubric: tool }
+  - { name: "Simon Willison", url: "https://simonwillison.net/atom/everything/", rubric: tool }

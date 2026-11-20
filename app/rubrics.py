@@ -21,6 +21,7 @@ class Rubric:
     kind: str  # "post" | "quiz"
     min_len: int = 0
     max_len: int = TG_TEXT_LIMIT
+    source: str = "backlog"  # "backlog" — темы из бэклога; "feed" — по материалам из источников
 
 
 @lru_cache
@@ -31,6 +32,9 @@ def load_rubrics(path: str | None = None) -> dict[str, Rubric]:
         kind = cfg.get("kind", "post")
         if kind not in ("post", "quiz"):
             raise ValueError(f"rubrics.yaml: у {key} неизвестный kind={kind}")
+        source = cfg.get("source", "backlog")
+        if source not in ("backlog", "feed"):
+            raise ValueError(f"rubrics.yaml: у {key} неизвестный source={source}")
         rubrics[key] = Rubric(
             key=key,
             title=cfg["title"],
@@ -38,6 +42,7 @@ def load_rubrics(path: str | None = None) -> dict[str, Rubric]:
             kind=kind,
             min_len=int(cfg.get("min_len", 0)),
             max_len=int(cfg.get("max_len", TG_TEXT_LIMIT)),
+            source=source,
         )
     return rubrics
 

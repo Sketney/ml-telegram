@@ -200,7 +200,10 @@ async def test_publish_failure_keeps_draft_approved(tg, settings):
 
 
 async def test_prepare_job_keeps_buffer(tg, settings, llm):
-    schedule = Schedule(18, 0, 1, (Slot("mon", 10, 0, "concept"), Slot("thu", 10, 0, "quiz")))
+    # paper — рубрика по источникам: плановая подготовка её не трогает
+    schedule = Schedule(
+        18, 0, 1, (Slot("mon", 10, 0, ("concept",)), Slot("thu", 10, 0, ("quiz",)), Slot("wed", 10, 0, ("paper",)))
+    )
     await prepare_job(tg.bot, settings, llm, schedule)
     async with db.session() as s:
         assert await moderation.count_in_work(s, "concept") == 1
@@ -218,5 +221,5 @@ async def test_prepare_job_reports_empty_backlog(tg, settings, llm):
         for t in (await s.scalars(select(Topic).where(Topic.rubric == "history"))).all():
             t.status = TopicStatus.USED.value
         await s.commit()
-    await prepare_job(tg.bot, settings, llm, Schedule(18, 0, 1, (Slot("fri", 10, 0, "history"),)))
+    await prepare_job(tg.bot, settings, llm, Schedule(18, 0, 1, (Slot("fri", 10, 0, ("history",)),)))
     assert "закончились темы" in tg.sent("sendMessage", ADMIN)[-1]["text"]

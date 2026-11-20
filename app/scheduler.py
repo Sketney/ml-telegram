@@ -14,9 +14,12 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app import db, generator, moderation
 from app.bot.cards import send_card
+from app.bot.digest import send_digest
 from app.config import Settings
 from app.llm import LLM
 from app.rubrics import get_rubric
+from app.sources import service as sources
+from app.sources.collectors import SourcesConfig
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +32,7 @@ class Slot:
     day: str
     hour: int
     minute: int
-    rubric: str
+    rubrics: tuple[str, ...]  # публикуется самый давно одобренный черновик любой из этих рубрик
 
 
 @dataclass(frozen=True)
@@ -41,7 +44,7 @@ class Schedule:
 
     @property
     def rubrics(self) -> list[str]:
-        return list(dict.fromkeys(s.rubric for s in self.slots))
+        return list(dict.fromkeys(r for s in self.slots for r in s.rubrics))
 
 
 def _hm(value: str, where: str) -> tuple[int, int]:
@@ -63,9 +66,15 @@ def load_schedule(path: str | Path) -> Schedule:
         day = str(item.get("day", "")).lower()
         if day not in DAYS:
             raise ValueError(f"schedule.yaml: слот {i} — день «{day}», ожидается один из {', '.join(DAYS)}")
-        get_rubric(item["rubric"])  # KeyError с понятным текстом, если рубрики нет
+        rubrics = item.get("rubrics") or [item.get("rubric")]
+        if isinstance(rubrics, str):
+            rubrics = [rubrics]
+        if not rubrics or not all(rubrics):
+            raise ValueError(f"schedule.yaml: слот {i} — не указана рубрика (rubric или rubrics)")
+        for key in rubrics:
+            get_rubric(key)  # KeyError с понятным текстом, если рубрики нет
         h, m = _hm(item.get("time"), f"слот {i}")
-        slots.append(Slot(day=day, hour=h, minute=m, rubric=item["rubric"]))
+        slots.append(Slot(day=day, hour=h, minute=m, rubrics=tuple(rubrics)))
     return Schedule(prepare_hour=ph, prepare_minute=pm, buffer=max(1, int(raw.get("buffer", 1))), slots=tuple(slots))
 
 
@@ -77,8 +86,10 @@ async def _notify(bot: Bot, settings: Settings, text: str) -> None:
 
 
 async def prepare_job(bot: Bot, settings: Settings, llm: LLM, schedule: Schedule) -> None:
-    """Для каждой рубрики из расписания держит buffer черновиков в работе."""
+    """Для каждой рубрики по бэклогу из расписания держит buffer черновиков в работе."""
     for rubric_key in schedule.rubrics:
+        if get_rubric(rubric_key).source != "backlog":
+            continue  # рубрики по источникам автор запускает сам из дайджеста
         title = get_rubric(rubric_key).title
         async with db.session() as s:
             try:
@@ -93,11 +104,12 @@ async def prepare_job(bot: Bot, settings: Settings, llm: LLM, schedule: Schedule
                 await _notify(bot, settings, f"«{title}»: не получилось подготовить черновик: {e}")
 
 
-async def publish_slot_job(bot: Bot, settings: Settings, rubric_key: str) -> None:
-    """Публикует самый старый одобренный черновик рубрики."""
-    title = get_rubric(rubric_key).title
+async def publish_slot_job(bot: Bot, settings: Settings, rubrics: str | tuple[str, ...]) -> None:
+    """Публикует самый давно одобренный черновик из рубрик слота."""
+    keys = (rubrics,) if isinstance(rubrics, str) else tuple(rubrics)
+    title = " / ".join(get_rubric(k).title for k in keys)
     async with db.session() as s:
-        draft = await moderation.next_approved(s, rubric_key)
+        draft = await moderation.next_approved(s, keys)
         if draft is None:
             await _notify(bot, settings, f"Слот «{title}» пропущен: нет одобренного черновика. /queue — что в работе.")
             return
@@ -107,10 +119,31 @@ async def publish_slot_job(bot: Bot, settings: Settings, rubric_key: str) -> Non
             log.exception("публикация черновика %s не удалась", draft.id)
             await _notify(bot, settings, f"Не получилось опубликовать черновик #{draft.id} («{title}»): {e}")
             return
-    await _notify(bot, settings, f"Опубликован черновик #{draft.id} («{title}») по расписанию.")
+    await _notify(
+        bot, settings, f"Опубликован черновик #{draft.id} («{get_rubric(draft.rubric).title}») по расписанию."
+    )
 
 
-def build_scheduler(bot: Bot, settings: Settings, llm: LLM, schedule: Schedule) -> AsyncIOScheduler:
+async def sources_job(bot: Bot, settings: Settings, llm: LLM, cfg: SourcesConfig) -> None:
+    """Собирает источники, оценивает новое и присылает автору дайджест кандидатов."""
+    async with db.session() as s:
+        try:
+            report = await sources.collect_and_rank(s, llm, cfg)
+        except Exception as e:
+            log.exception("сбор источников не удался")
+            await _notify(bot, settings, f"Не получилось собрать источники: {e}")
+            return
+        if report.errors:
+            await _notify(bot, settings, "Источники не ответили:\n" + "\n".join(f"• {e}" for e in report.errors)[:3500])
+        try:
+            await send_digest(bot, settings.admin_id, s, cfg, include_offered=False)
+        except Exception:
+            log.exception("не удалось отправить дайджест")
+
+
+def build_scheduler(
+    bot: Bot, settings: Settings, llm: LLM, schedule: Schedule, sources_cfg: SourcesConfig | None = None
+) -> AsyncIOScheduler:
     tz = ZoneInfo(settings.timezone)
     scheduler = AsyncIOScheduler(timezone=tz)
     common = {"misfire_grace_time": MISFIRE_GRACE_SECONDS, "coalesce": True, "max_instances": 1}
@@ -125,8 +158,16 @@ def build_scheduler(bot: Bot, settings: Settings, llm: LLM, schedule: Schedule) 
         scheduler.add_job(
             publish_slot_job,
             CronTrigger(day_of_week=slot.day, hour=slot.hour, minute=slot.minute, timezone=tz),
-            args=(bot, settings, slot.rubric),
-            id=f"publish-{i}-{slot.day}-{slot.rubric}",
+            args=(bot, settings, slot.rubrics),
+            id=f"publish-{i}-{slot.day}-{'+'.join(slot.rubrics)}",
+            **common,
+        )
+    if sources_cfg is not None and sources_cfg.enabled:
+        scheduler.add_job(
+            sources_job,
+            CronTrigger(hour=sources_cfg.collect_hour, minute=sources_cfg.collect_minute, timezone=tz),
+            args=(bot, settings, llm, sources_cfg),
+            id="sources",
             **common,
         )
     return scheduler
