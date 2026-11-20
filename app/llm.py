@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Protocol
 
 from app.config import Settings
+
+log = logging.getLogger(__name__)
+
+# Потолок ответа, а не расход. Запас нужен: актуальные модели Claude сначала рассуждают,
+# и эти токены входят в тот же лимит, что и сам текст поста.
+ANTHROPIC_MAX_TOKENS = 16000
 
 
 class LLM(Protocol):
@@ -22,10 +29,12 @@ class AnthropicLLM:
     async def complete(self, system: str, user: str, *, cheap: bool = False) -> str:
         resp = await self._client.messages.create(
             model=self._settings.model_for(cheap),
-            max_tokens=4000,
+            max_tokens=ANTHROPIC_MAX_TOKENS,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
+        if resp.stop_reason == "max_tokens":
+            log.warning("ответ модели обрезан по max_tokens=%s", ANTHROPIC_MAX_TOKENS)
         return "".join(block.text for block in resp.content if block.type == "text")
 
 
