@@ -1,0 +1,33 @@
+services:
+  db:
+    # Postgres с расширением pgvector: оно понадобится на этапе 3 для поиска повторов тем.
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mlbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задай POSTGRES_PASSWORD в .env}
+      POSTGRES_DB: mlbot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlbot -d mlbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://mlbot:${POSTGRES_PASSWORD}@db:5432/mlbot}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Промпты, бэклог и расписание правятся без пересборки образа: поменял файл → docker compose restart bot
+      - ./prompts:/srv/prompts:ro
+      - ./data:/srv/data:ro
+
+volumes:
+  pgdata:

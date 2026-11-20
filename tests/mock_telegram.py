@@ -1,0 +1,183 @@
+"""Мини-сервер, изображающий Telegram Bot API: чтобы гонять бота целиком без сети и токена."""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+import json
+import time
+from collections.abc import Callable
+from typing import Any
+
+from aiohttp import web
+
+BOT_USER = {"id": 1000, "is_bot": True, "first_name": "TestBot", "username": "test_bot"}
+CHANNEL_ID = -1001234567890
+
+
+class MockTelegram:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self._updates: asyncio.Queue[dict] = asyncio.Queue()
+        self._update_id = 0
+        self._message_id = 100
+        self.messages: dict[int, dict] = {}  # всё, что бот отправил, по message_id
+        self.fail_next: dict[str, str] = {}  # method -> описание ошибки для одного вызова
+        self._runner: web.AppRunner | None = None
+        self.base = ""
+
+    # --- управление из тестов ---------------------------------------------
+
+    async def start(self) -> None:
+        app = web.Application()
+        app.router.add_route("*", "/bot{token}/{method}", self._handle)
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        site = web.TCPSite(self._runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        self.base = f"http://127.0.0.1:{port}"
+
+    async def stop(self) -> None:
+        if self._runner:
+            await self._runner.cleanup()
+
+    def user_message(self, user_id: int, text: str, entities: list[dict] | None = None) -> None:
+        self._message_id += 1
+        msg = {
+            "message_id": self._message_id,
+            "date": int(time.time()),
+            "chat": {"id": user_id, "type": "private"},
+            "from": {"id": user_id, "is_bot": False, "first_name": "User"},
+            "text": text,
+        }
+        if entities:
+            msg["entities"] = entities
+        elif text.startswith("/"):
+            msg["entities"] = [{"type": "bot_command", "offset": 0, "length": len(text.split()[0])}]
+        self._push({"message": msg})
+
+    def press(self, user_id: int, card: dict, data: str) -> None:
+        self._push(
+            {
+                "callback_query": {
+                    "id": str(self._update_id + 1),
+                    "from": {"id": user_id, "is_bot": False, "first_name": "User"},
+                    "chat_instance": "ci",
+                    "data": data,
+                    "message": card,
+                }
+            }
+        )
+
+    def _push(self, update: dict) -> None:
+        self._update_id += 1
+        self._updates.put_nowait({"update_id": self._update_id, **update})
+
+    def sent(self, method: str, chat_id: int | str | None = None) -> list[dict]:
+        return [p for m, p in self.calls if m == method and (chat_id is None or str(p.get("chat_id")) == str(chat_id))]
+
+    def last_card(self, chat_id: int) -> dict:
+        """Последнее сообщение с кнопками в этом чате — копия: как его видит клиент на момент вызова."""
+        cards = [m for m in self.messages.values() if m["chat"]["id"] == chat_id and m.get("reply_markup")]
+        assert cards, "бот не прислал ни одной карточки с кнопками"
+        return copy.deepcopy(cards[-1])
+
+    async def next_card(self, chat_id: int, after: dict) -> dict:
+        """Ждёт карточку с кнопками, отправленную позже указанной."""
+        await self.wait_for(
+            lambda: any(
+                m["message_id"] > after["message_id"] and m["chat"]["id"] == chat_id and m.get("reply_markup")
+                for m in self.messages.values()
+            )
+        )
+        return self.last_card(chat_id)
+
+    @staticmethod
+    def buttons(card: dict) -> dict[str, str]:
+        """Текст кнопки → callback_data."""
+        return {b["text"]: b["callback_data"] for row in card["reply_markup"]["inline_keyboard"] for b in row}
+
+    async def wait_for(self, cond: Callable[[], bool], timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        while not cond():
+            if time.monotonic() > deadline:
+                raise AssertionError(f"не дождался условия; вызовы: {[m for m, _ in self.calls]}")
+            await asyncio.sleep(0.02)
+
+    # --- сам «Telegram» ------------------------------------------------------
+
+    async def _handle(self, request: web.Request) -> web.Response:
+        method = request.match_info["method"]
+        params: dict[str, Any] = dict(await request.post()) if request.can_read_body else {}
+        for key in ("reply_markup", "options", "link_preview_options", "correct_option_ids", "commands"):
+            if isinstance(params.get(key), str):
+                params[key] = json.loads(params[key])
+
+        if method == "getUpdates":
+            try:
+                first = await asyncio.wait_for(self._updates.get(), timeout=0.2)
+            except asyncio.TimeoutError:
+                return self._ok([])
+            batch = [first]
+            while not self._updates.empty():
+                batch.append(self._updates.get_nowait())
+            return self._ok(batch)
+
+        self.calls.append((method, params))
+        if method in self.fail_next:
+            return web.json_response(
+                {"ok": False, "error_code": 400, "description": self.fail_next.pop(method)}, status=400
+            )
+        if method == "getMe":
+            return self._ok(BOT_USER)
+        if method == "sendMessage":
+            return self._ok(self._store(params, text=params["text"]))
+        if method == "sendPoll":
+            poll = {
+                "id": "p1",
+                "question": params["question"],
+                "options": [
+                    {"persistent_id": str(i), "text": o["text"], "voter_count": 0}
+                    for i, o in enumerate(params["options"])
+                ],
+                "total_voter_count": 0,
+                "is_closed": False,
+                "is_anonymous": True,
+                "type": params.get("type", "regular"),
+                "allows_multiple_answers": False,
+                "allows_revoting": False,
+                "members_only": False,
+            }
+            return self._ok(self._store(params, poll=poll))
+        if method == "editMessageText":
+            msg = self.messages[int(params["message_id"])]
+            msg["text"] = params["text"]
+            if "reply_markup" in params:
+                msg["reply_markup"] = params["reply_markup"]
+            else:
+                msg.pop("reply_markup", None)
+            return self._ok(msg)
+        return self._ok(True)  # answerCallbackQuery, setMyCommands, deleteWebhook…
+
+    def _store(self, params: dict, **content: Any) -> dict:
+        self._message_id += 1
+        raw_chat = params["chat_id"]
+        is_channel = str(raw_chat).startswith(("@", "-100"))
+        msg = {
+            "message_id": self._message_id,
+            "date": int(time.time()),
+            "chat": {"id": CHANNEL_ID, "type": "channel", "title": "Test"}
+            if is_channel
+            else {"id": int(raw_chat), "type": "private"},
+            "from": BOT_USER,
+            **content,
+        }
+        if params.get("reply_markup"):
+            msg["reply_markup"] = params["reply_markup"]
+        self.messages[msg["message_id"]] = msg
+        return msg
+
+    @staticmethod
+    def _ok(result: Any) -> web.Response:
+        return web.json_response({"ok": True, "result": result})

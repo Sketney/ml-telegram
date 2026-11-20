@@ -1,0 +1,113 @@
+"""Действия автора над черновиком. Хендлеры бота и планировщик зовут эти функции."""
+
+from __future__ import annotations
+
+from aiogram import Bot
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import Settings
+from app.models import Draft, DraftStatus, Topic, TopicStatus, utcnow
+from app.publisher import send_draft
+from app.rubrics import get_rubric
+from app.validator import validate_payload
+
+
+class NotAllowed(Exception):
+    """Действие невозможно в текущем состоянии черновика; текст — причина для автора."""
+
+
+OPEN_STATUSES = (DraftStatus.PENDING.value, DraftStatus.APPROVED.value, DraftStatus.POSTPONED.value)
+
+
+def channel_chat_id(settings: Settings) -> int | str:
+    cid = settings.channel_id.strip()
+    return int(cid) if cid.lstrip("-").isdigit() else cid
+
+
+def ensure_open(draft: Draft) -> None:
+    if draft.status not in OPEN_STATUSES:
+        raise NotAllowed(f"черновик уже в статусе «{draft.status}»")
+
+
+def _ensure_publishable(draft: Draft) -> None:
+    ensure_open(draft)
+    if draft.has_errors:
+        errors = "; ".join(i["text"] for i in draft.issues if i["level"] == "error")
+        raise NotAllowed(f"сначала нужно исправить: {errors}")
+
+
+async def approve(session: AsyncSession, draft: Draft) -> Draft:
+    """В очередь: выйдет в ближайший слот своей рубрики."""
+    _ensure_publishable(draft)
+    draft.status = DraftStatus.APPROVED.value
+    draft.approved_at = utcnow()
+    await session.commit()
+    return draft
+
+
+async def publish(session: AsyncSession, bot: Bot, settings: Settings, draft: Draft) -> Draft:
+    _ensure_publishable(draft)
+    msg = await send_draft(bot, channel_chat_id(settings), draft)
+    draft.status = DraftStatus.PUBLISHED.value
+    draft.published_at = utcnow()
+    draft.channel_message_id = msg.message_id
+    await session.commit()
+    return draft
+
+
+async def postpone(session: AsyncSession, draft: Draft) -> Draft:
+    ensure_open(draft)
+    draft.status = DraftStatus.POSTPONED.value
+    await session.commit()
+    return draft
+
+
+async def reject(session: AsyncSession, draft: Draft) -> Draft:
+    """В архив; тема помечается, чтобы бот не предложил её снова."""
+    ensure_open(draft)
+    draft.status = DraftStatus.REJECTED.value
+    if draft.topic_id:
+        topic = await session.get(Topic, draft.topic_id)
+        if topic:
+            topic.status = TopicStatus.SKIPPED.value
+    await session.commit()
+    return draft
+
+
+async def set_text(session: AsyncSession, draft: Draft, html: str) -> Draft:
+    """Автор прислал свою версию текста поста."""
+    ensure_open(draft)
+    if draft.payload.get("kind") != "post":
+        raise NotAllowed("правка текстом работает только для постов; квиз можно перегенерировать с комментарием")
+    rubric = get_rubric(draft.rubric)
+    payload = {"kind": "post", "html": html.strip()}
+    draft.payload = payload
+    draft.issues = validate_payload(payload, min_len=rubric.min_len, max_len=rubric.max_len)
+    draft.version += 1
+    draft.status = DraftStatus.PENDING.value
+    await session.commit()
+    return draft
+
+
+async def next_approved(session: AsyncSession, rubric: str) -> Draft | None:
+    return await session.scalar(
+        select(Draft)
+        .where(Draft.rubric == rubric, Draft.status == DraftStatus.APPROVED.value)
+        .order_by(Draft.approved_at, Draft.id)
+        .limit(1)
+    )
+
+
+async def count_in_work(session: AsyncSession, rubric: str) -> int:
+    """Сколько черновиков рубрики ждут решения или своего слота."""
+    return await session.scalar(
+        select(func.count())
+        .select_from(Draft)
+        .where(Draft.rubric == rubric, Draft.status.in_((DraftStatus.PENDING.value, DraftStatus.APPROVED.value)))
+    )
+
+
+async def list_queue(session: AsyncSession) -> list[Draft]:
+    rows = await session.scalars(select(Draft).where(Draft.status.in_(OPEN_STATUSES)).order_by(Draft.status, Draft.id))
+    return list(rows.all())
