@@ -337,12 +337,64 @@ async def _prompt_and_material(
     return build_user_prompt(title, notes, comment, previous, source), (source[1] if source else None)
 
 
-async def _finish(session: AsyncSession, llm: LLM, settings: Settings, draft: Draft, material: str | None) -> None:
-    """Фактчек по материалу и картинка для шпаргалки. Сбои здесь не роняют черновик, а попадают в его замечания."""
+def _tail(rubric: Rubric, settings: Settings) -> str:
+    """Хештег и подпись, которые система дописывает к телу поста."""
+    return "\n".join(x for x in (rubric.hashtag, settings.channel_signature.strip()) if x)
+
+
+async def _revise_by_factcheck(
+    llm: LLM, settings: Settings, rubric: Rubric, payload: dict, findings: list[dict], prompt: str
+) -> tuple[dict, list[dict]] | None:
+    """Одна попытка переписать пост по замечаниям фактчека. None — исправить не удалось, остаётся исходный."""
+    body = payload["html"]
+    tail = _tail(rubric, settings)
+    if tail and body.rstrip().endswith(tail):
+        body = body.rstrip()[: -len(tail)].rstrip()  # иначе хештег после сборки задвоится
+    claims = "\n".join(f"- {f['text'].removeprefix('фактчек: ')}" for f in findings)
+    revise_prompt = (
+        f"{prompt}\n\n"
+        "Ты уже написал по этому материалу пост:\n<post>\n"
+        f"{body}\n</post>\n\n"
+        "Проверка нашла в нём утверждения, которые расходятся с материалом:\n"
+        f"{claims}\n\n"
+        "Исправь только эти места: приведи их в точное соответствие с материалом, а если материал этого "
+        "не подтверждает — убери утверждение. Остальной текст, структуру и блоки в фигурных скобках "
+        "(«{Мой опыт}», «{Моё мнение}») оставь как есть. Верни пост целиком в том же формате JSON."
+    )
+    try:
+        new_payload, new_issues = await _generate_payload(llm, settings, rubric, revise_prompt)
+    except Exception:
+        log.warning("рубрика %s: переписать пост по фактчеку не удалось", rubric.key, exc_info=True)
+        return None
+    if any(i["level"] == "error" and not i.get("author_block") for i in new_issues):
+        log.warning("рубрика %s: исправленная версия не прошла валидатор, оставляю исходную", rubric.key)
+        return None
+    return new_payload, new_issues
+
+
+async def _finish(
+    session: AsyncSession, llm: LLM, settings: Settings, draft: Draft, material: str | None, prompt: str = ""
+) -> None:
+    """Фактчек по материалу (с одним автоисправлением) и картинка для шпаргалки.
+
+    Сбои здесь не роняют черновик, а попадают в его замечания.
+    """
     extra: list[dict] = []
     if material and draft.payload.get("kind") == "post":
-        extra += await factcheck.check(llm, draft.payload["html"], material)
-        link = source_link(material) if get_rubric(draft.rubric).grounded else None
+        rubric = get_rubric(draft.rubric)
+        findings = await factcheck.check(llm, draft.payload["html"], material)
+        claims = [f for f in findings if f.get("factcheck") == "claim"]
+        if claims and prompt:
+            revised = await _revise_by_factcheck(llm, settings, rubric, draft.payload, claims, prompt)
+            if revised is not None:
+                draft.payload, draft.issues = revised
+                extra += [
+                    {"level": "info", "text": "исправлено по фактчеку: " + f["text"].removeprefix("фактчек: ")}
+                    for f in claims
+                ]
+                findings = await factcheck.check(llm, draft.payload["html"], material)  # что осталось после правки
+        extra += findings
+        link = source_link(material) if rubric.grounded else None
         if link and link not in draft.payload["html"]:
             extra.append({"level": "warn", "text": f"в посте нет ссылки на источник: {link}"})
     if draft.payload.get("kind") == "sheet" and not draft.has_errors:
@@ -374,7 +426,7 @@ async def generate_draft(
         draft = Draft(rubric=rubric_key, topic_id=topic_id, payload=payload, issues=issues)
         session.add(draft)
         await session.flush()
-        await _finish(session, llm, settings, draft, material)
+        await _finish(session, llm, settings, draft, material, prompt)
     except BaseException:
         await release_topic(session, topic_id)
         raise
@@ -401,7 +453,7 @@ async def regenerate_draft(
     draft.issues = issues
     draft.version += 1
     draft.status = DraftStatus.PENDING.value
-    await _finish(session, llm, settings, draft, material)
+    await _finish(session, llm, settings, draft, material, prompt)
     await session.commit()
     return draft
 

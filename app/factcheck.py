@@ -21,11 +21,15 @@ async def check(llm: LLM, post_html: str, material: str) -> list[dict]:
         data = extract_json_object(await llm.complete(system, user, cheap=True))
     except Exception as e:  # noqa: BLE001 — сеть, лимиты, неразборчивый ответ: пост от этого хуже не стал
         log.warning("фактчек не выполнен: %s", e)
-        return [{"level": "warn", "text": "фактчек не выполнен, сверь цифры с источником вручную"}]
+        return [
+            {"level": "warn", "text": "фактчек не выполнен, сверь цифры с источником вручную", "factcheck": "failed"}
+        ]
     findings = []
     for row in (data.get("unsupported") or [])[:MAX_FINDINGS]:
         if not isinstance(row, dict) or not str(row.get("claim") or "").strip():
             continue
         claim, why = str(row["claim"]).strip()[:160], str(row.get("why") or "").strip()[:160]
-        findings.append({"level": "warn", "text": f"фактчек: «{claim}»" + (f" — {why}" if why else "")})
+        findings.append(
+            {"level": "warn", "text": f"фактчек: «{claim}»" + (f" — {why}" if why else ""), "factcheck": "claim"}
+        )
     return findings

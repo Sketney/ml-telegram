@@ -74,7 +74,7 @@ async def card_text(session: AsyncSession, draft: Draft, note: str = "") -> str:
     if topic:
         lines.insert(1, f"Тема: {escape(topic.title)}")
     for i in draft.issues or []:
-        mark = "⛔️" if i["level"] == "error" else "⚠️"
+        mark = {"error": "⛔️", "info": "✏️"}.get(i["level"], "⚠️")
         lines.append(f"{mark} {escape(i['text'])}")
     if draft_placeholders(draft):
         lines.append("Публикация закрыта, пока не вписан твой блок: кнопка 🧩 ниже.")

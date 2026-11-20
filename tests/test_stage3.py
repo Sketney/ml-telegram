@@ -135,7 +135,9 @@ async def test_factcheck_findings_and_failures():
     found = json.dumps({"unsupported": [{"claim": "в 10 раз быстрее", "why": "в источнике 2.03 раза"}, {"claim": ""}]})
     llm = Scripted(found, "не JSON")
     issues = await factcheck.check(llm, "<b>пост</b>", "материал")
-    assert issues == [{"level": "warn", "text": "фактчек: «в 10 раз быстрее» — в источнике 2.03 раза"}]
+    assert issues == [
+        {"level": "warn", "text": "фактчек: «в 10 раз быстрее» — в источнике 2.03 раза", "factcheck": "claim"}
+    ]
     assert llm.calls[0][2] is True and "<material>\nматериал" in llm.calls[0][1]  # дешёвая модель
     (failed,) = await factcheck.check(llm, "<b>пост</b>", "материал")
     assert failed["level"] == "warn" and "фактчек не выполнен" in failed["text"]
@@ -373,3 +375,66 @@ async def test_backlog_sync_skips_fact_topics_without_source(database, tmp_path)
         topic = await s.scalar(select(Topic).where(Topic.title == "С фактами"))
         assert topic.notes.endswith("Источник: https://example.com/a")
         assert len((await s.scalars(select(Topic).where(Topic.rubric == "fact"))).all()) == before + 1
+
+
+# --- автоисправление по фактчеку ---------------------------------------------------------------
+
+BAD = json.dumps({"html": "<b>Эксперимент</b>\n\nМодель выдала 500 токенов в секунду."})
+GOOD = json.dumps({"html": "<b>Эксперимент</b>\n\nМодель выдала 41 токен в секунду."})
+FOUND = json.dumps({"unsupported": [{"claim": "500 токенов в секунду", "why": "в заметках 41"}]})
+CLEAN = json.dumps({"unsupported": []})
+
+
+async def experiment_draft(settings, llm) -> Draft:
+    async with db.session() as s:
+        topic = await generator.topic_from_notes(s, "experiment", NOTES)
+        return await generator.generate_draft(s, llm, settings, "experiment", topic)
+
+
+async def test_post_is_rewritten_once_by_factcheck_findings(database, settings):
+    llm = Scripted(BAD, FOUND, GOOD, CLEAN)
+    draft = await experiment_draft(settings, llm)
+    assert "41 токен в секунду" in draft.payload["html"] and "500" not in draft.payload["html"]
+    assert draft.payload["html"].count("#EML_experiment") == 1  # хештег не задвоился при пересборке
+    assert levels(draft.issues, "info") == ["исправлено по фактчеку: «500 токенов в секунду» — в заметках 41"]
+    assert not [w for w in levels(draft.issues, "warn") if w.startswith("фактчек")]
+    assert [cheap for _, _, cheap in llm.calls] == [False, True, False, True]  # пост, проверка, правка, перепроверка
+    revise_prompt = llm.calls[2][1]
+    assert "<notes>" in revise_prompt and "500 токенов в секунду" in revise_prompt and "<post>" in revise_prompt
+    assert "#EML_experiment" not in revise_prompt
+
+
+async def test_remaining_findings_stay_as_warnings_and_no_second_rewrite(database, settings):
+    llm = Scripted(BAD, FOUND, BAD, FOUND)  # правка не помогла
+    draft = await experiment_draft(settings, llm)
+    assert len(llm.calls) == 4  # второй раз не переписываем: решение за автором
+    assert [w for w in levels(draft.issues, "warn") if w.startswith("фактчек")] == [
+        "фактчек: «500 токенов в секунду» — в заметках 41"
+    ]
+
+
+async def test_broken_rewrite_keeps_the_original_post(database, settings):
+    for broken in ("не JSON", json.dumps({"html": "<p>сломанная разметка</p>"})):
+        llm = Scripted(BAD, FOUND, broken, broken, CLEAN)
+        async with db.session() as s:
+            topic = await generator.topic_from_notes(s, "experiment", NOTES + " " + broken[:5])
+            draft = await generator.generate_draft(s, llm, settings, "experiment", topic)
+        assert "500 токенов в секунду" in draft.payload["html"]
+        assert levels(draft.issues, "info") == []
+        assert any(w.startswith("фактчек: «500") for w in levels(draft.issues, "warn"))
+
+
+async def test_rewrite_keeps_the_author_block(database, settings, monkeypatch):
+    with_block = json.dumps({"html": "<b>Инструмент</b>\n\nУмеет всё.\n\n<b>Мой опыт:</b> {Мой опыт}"})
+    fixed = json.dumps({"html": "<b>Инструмент</b>\n\nУмеет кое-что.\n\n<b>Мой опыт:</b> {Мой опыт}"})
+    found = json.dumps({"unsupported": [{"claim": "Умеет всё", "why": "в README этого нет"}]})
+    llm = Scripted(with_block, found, fixed, CLEAN)
+    async with db.session() as s:
+        await service.store_found(
+            s, [Found("github", "tool", "https://github.com/a/t", "a/t", "desc", {"repo": "a/t"})]
+        )
+        item = await s.scalar(select(service.SourceItem))
+        topic = await generator.topic_from_item(s, item)
+        draft = await generator.generate_draft(s, llm, settings, "tool", topic)
+    assert "Умеет кое-что" in draft.payload["html"] and "{Мой опыт}" in draft.payload["html"]
+    assert len(llm.calls) == 4 and draft.has_errors  # блок автора по-прежнему ждёт заполнения
