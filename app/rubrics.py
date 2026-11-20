@@ -18,10 +18,11 @@ class Rubric:
     key: str
     title: str
     hashtag: str
-    kind: str  # "post" | "quiz"
+    kind: str  # "post" | "quiz" | "sheet" (картинка-шпаргалка с подписью)
     min_len: int = 0
     max_len: int = TG_TEXT_LIMIT
-    source: str = "backlog"  # "backlog" — темы из бэклога; "feed" — по материалам из источников
+    # "backlog" — темы из бэклога; "feed" — по материалам из источников; "notes" — по заметкам автора
+    source: str = "backlog"
 
 
 @lru_cache
@@ -30,10 +31,10 @@ def load_rubrics(path: str | None = None) -> dict[str, Rubric]:
     rubrics = {}
     for key, cfg in raw.items():
         kind = cfg.get("kind", "post")
-        if kind not in ("post", "quiz"):
+        if kind not in ("post", "quiz", "sheet"):
             raise ValueError(f"rubrics.yaml: у {key} неизвестный kind={kind}")
         source = cfg.get("source", "backlog")
-        if source not in ("backlog", "feed"):
+        if source not in ("backlog", "feed", "notes"):
             raise ValueError(f"rubrics.yaml: у {key} неизвестный source={source}")
         rubrics[key] = Rubric(
             key=key,

@@ -12,7 +12,7 @@ from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app import db, generator, moderation
+from app import db, generator, metrics, moderation
 from app.bot.cards import send_card
 from app.bot.digest import send_digest
 from app.config import Settings
@@ -41,6 +41,8 @@ class Schedule:
     prepare_minute: int
     buffer: int
     slots: tuple[Slot, ...]
+    stats_hour: int = 9
+    stats_minute: int = 0
 
     @property
     def rubrics(self) -> list[str]:
@@ -75,7 +77,15 @@ def load_schedule(path: str | Path) -> Schedule:
             get_rubric(key)  # KeyError с понятным текстом, если рубрики нет
         h, m = _hm(item.get("time"), f"слот {i}")
         slots.append(Slot(day=day, hour=h, minute=m, rubrics=tuple(rubrics)))
-    return Schedule(prepare_hour=ph, prepare_minute=pm, buffer=max(1, int(raw.get("buffer", 1))), slots=tuple(slots))
+    sh, sm = _hm(raw.get("stats_at", "09:00"), "stats_at")
+    return Schedule(
+        prepare_hour=ph,
+        prepare_minute=pm,
+        buffer=max(1, int(raw.get("buffer", 1))),
+        slots=tuple(slots),
+        stats_hour=sh,
+        stats_minute=sm,
+    )
 
 
 async def _notify(bot: Bot, settings: Settings, text: str) -> None:
@@ -124,6 +134,18 @@ async def publish_slot_job(bot: Bot, settings: Settings, rubrics: str | tuple[st
     )
 
 
+async def stats_job(settings: Settings) -> None:
+    """Снимает просмотры опубликованных постов. Тихая задача: о сбоях пишет только в лог."""
+    async with db.session() as s:
+        try:
+            updated = await metrics.refresh(s, settings)
+            log.info("статистика: обновлено постов — %s", updated)
+        except metrics.StatsUnavailable as e:
+            log.warning("статистика недоступна: %s", e)
+        except Exception:
+            log.exception("сбор статистики не удался")
+
+
 async def sources_job(bot: Bot, settings: Settings, llm: LLM, cfg: SourcesConfig) -> None:
     """Собирает источники, оценивает новое и присылает автору дайджест кандидатов."""
     async with db.session() as s:
@@ -162,6 +184,13 @@ def build_scheduler(
             id=f"publish-{i}-{slot.day}-{'+'.join(slot.rubrics)}",
             **common,
         )
+    scheduler.add_job(
+        stats_job,
+        CronTrigger(hour=schedule.stats_hour, minute=schedule.stats_minute, timezone=tz),
+        args=(settings,),
+        id="stats",
+        **common,
+    )
     if sources_cfg is not None and sources_cfg.enabled:
         scheduler.add_job(
             sources_job,

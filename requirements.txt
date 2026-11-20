@@ -7,3 +7,8 @@ PyYAML>=6
 anthropic>=1.0
 openai>=1.50
 tzdata
+# шпаргалки: HTML → PNG через headless Chromium
+playwright>=1.49
+# расшифровка голосовых локальной моделью
+faster-whisper>=1.1
+numpy

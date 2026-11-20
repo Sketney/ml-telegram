@@ -69,10 +69,33 @@ class FakeLLM:
     async def complete(self, system: str, user: str, *, cheap: bool = False) -> str:
         self.calls.append((system, user))
         topic = _extract_topic(user)
-        if '"items"' in system:  # запрос на оценку кандидатов из источников
-            rows = json.loads(user[user.index("[") :])
+        if '"items": [{"id"' in system:  # запрос на оценку кандидатов из источников
+            rows = json.loads(user[user.index("Материалы:\n") + len("Материалы:\n") :])
             return json.dumps(
                 {"items": [{"id": r["id"], "score": 7, "why": "заглушка FakeLLM"} for r in rows]}, ensure_ascii=False
+            )
+        if '"unsupported"' in system:  # запрос на фактчек
+            return json.dumps({"unsupported": []})
+        if '"sections"' in system:  # шпаргалка
+            return json.dumps(
+                {
+                    "title": f"[заглушка] {topic}"[:60],
+                    "subtitle": "Заглушка FakeLLM: проверка механики шпаргалок",
+                    "sections": [
+                        {
+                            "heading": "Блок 1",
+                            "items": [{"term": "A", "text": "первая строка"}, {"term": "B", "text": "вторая"}],
+                        },
+                        {
+                            "heading": "Блок 2",
+                            "items": [{"term": "C", "text": "третья строка"}, {"term": "D", "text": "четвёртая"}],
+                        },
+                    ],
+                    "takeaway": "Подключи настоящую модель в .env.",
+                    "caption": f"<b>Шпаргалка: {escape(topic)}</b>\n\nЗаглушка FakeLLM. "
+                    + "Текст подписи для проверки длины. " * 5,
+                },
+                ensure_ascii=False,
             )
         if '"question"' in system:
             return json.dumps(

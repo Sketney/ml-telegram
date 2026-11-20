@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     channel_signature: str = ""
     quiz_show_answer_option: bool = True
 
+    # Расшифровка голосовых: модель faster-whisper (tiny, base, small, medium). Пусто — выключено.
+    whisper_model: str = "small"
+    whisper_dir: str = str(ROOT / "whisper")
+
     schedule_file: str = str(DATA_DIR / "schedule.yaml")
     sources_file: str = str(DATA_DIR / "sources.yaml")
 

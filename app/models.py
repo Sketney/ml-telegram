@@ -3,7 +3,7 @@ from __future__ import annotations
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -49,6 +49,7 @@ class Draft(Base):
     topic_id: Mapped[int | None] = mapped_column(ForeignKey("topics.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default=DraftStatus.PENDING.value, index=True)
     # post: {"kind": "post", "html": "..."}
+    # sheet: {"kind": "sheet", "html": "<подпись>", "sheet": {...}} — картинка лежит в draft_images
     # quiz: {"kind": "quiz", "question": "...", "options": [...], "correct_index": 0, "explanation": "..."}
     payload: Mapped[dict] = mapped_column(JSON)
     # [{"level": "error"|"warn", "text": "..."}] — error блокирует публикацию
@@ -90,3 +91,23 @@ class SourceItem(Base):
     score_reason: Mapped[str] = mapped_column(String(400), default="")
     status: Mapped[str] = mapped_column(String(16), default=ItemStatus.NEW.value, index=True)
     topic_id: Mapped[int | None] = mapped_column(ForeignKey("topics.id"), nullable=True, index=True)
+
+
+class DraftImage(Base):
+    """Картинка черновика (шпаргалка). Хранится в базе, чтобы переживать пересборку контейнера."""
+
+    __tablename__ = "draft_images"
+
+    draft_id: Mapped[int] = mapped_column(ForeignKey("drafts.id"), primary_key=True)
+    png: Mapped[bytes] = mapped_column(LargeBinary)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class PostStats(Base):
+    """Последний известный счётчик просмотров опубликованного поста."""
+
+    __tablename__ = "post_stats"
+
+    draft_id: Mapped[int] = mapped_column(ForeignKey("drafts.id"), primary_key=True)
+    views: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

@@ -7,8 +7,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.models import Draft, DraftStatus, Topic, TopicStatus, utcnow
-from app.publisher import send_draft
+from app.models import Draft, DraftImage, DraftStatus, Topic, TopicStatus, utcnow
+from app.publisher import NoImage, send_draft
 from app.rubrics import get_rubric
 from app.validator import find_placeholders, validate_payload
 
@@ -63,9 +63,19 @@ async def approve(session: AsyncSession, draft: Draft) -> Draft:
     return draft
 
 
+async def draft_image(session: AsyncSession, draft: Draft) -> bytes | None:
+    if draft.payload.get("kind") != "sheet":
+        return None
+    image = await session.get(DraftImage, draft.id)
+    return image.png if image else None
+
+
 async def publish(session: AsyncSession, bot: Bot, settings: Settings, draft: Draft) -> Draft:
     _ensure_publishable(draft)
-    msg = await send_draft(bot, channel_chat_id(settings), draft)
+    try:
+        msg = await send_draft(bot, channel_chat_id(settings), draft, await draft_image(session, draft))
+    except NoImage as e:
+        raise NotAllowed(str(e)) from e
     draft.status = DraftStatus.PUBLISHED.value
     draft.published_at = utcnow()
     draft.channel_message_id = msg.message_id
@@ -95,10 +105,10 @@ async def reject(session: AsyncSession, draft: Draft) -> Draft:
 async def set_text(session: AsyncSession, draft: Draft, html: str) -> Draft:
     """Автор прислал свою версию текста поста."""
     ensure_open(draft)
-    if draft.payload.get("kind") != "post":
+    if draft.payload.get("kind") not in ("post", "sheet"):
         raise NotAllowed("правка текстом работает только для постов; квиз можно перегенерировать с комментарием")
     rubric = get_rubric(draft.rubric)
-    payload = {"kind": "post", "html": html.strip()}
+    payload = {**draft.payload, "html": html.strip()}  # у шпаргалки меняется только подпись, картинка остаётся
     draft.payload = payload
     draft.issues = validate_payload(payload, min_len=rubric.min_len, max_len=rubric.max_len)
     draft.version += 1

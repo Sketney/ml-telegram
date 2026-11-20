@@ -46,13 +46,13 @@ async def fetch(tg) -> dict[str, dict]:
 
 async def press_and_wait_card(tg, card: dict, button: str) -> dict:
     """Нажимает кнопку и ждёт карточку, которой до нажатия ещё не было."""
-    mark = {"message_id": max(tg.messages)}
+    mark = {"message_id": max(tg.messages, default=0)}
     tg.press(ADMIN, card, tg.buttons(card)[button])
     return await tg.next_card(ADMIN, mark)
 
 
 async def say_and_wait_card(tg, text: str) -> dict:
-    mark = {"message_id": max(tg.messages)}
+    mark = {"message_id": max(tg.messages, default=0)}
     tg.user_message(ADMIN, text)
     return await tg.next_card(ADMIN, mark)
 
@@ -89,7 +89,8 @@ async def test_write_tool_fill_own_block_and_publish(tg, collected, llm):
     card = await press_and_wait_card(tg, digest, "✍️ 1")
 
     # модель получила текст источника и ссылку, а не только название
-    prompt = llm.calls[-1][1]
+    prompt = next(user for _, user in llm.calls if "<source>" in user)
+    assert "<material>" in llm.calls[-1][1]  # следом шёл фактчек по тому же материалу
     assert "ТЕКСТ ИСТОЧНИКА: a/tool" in prompt and "https://github.com/a/tool" in prompt and "<source>" in prompt
     assert "reply_markup" not in tg.messages[digest["message_id"]]  # кнопки использованного кандидата убраны
 

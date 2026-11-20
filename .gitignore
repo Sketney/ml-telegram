@@ -11,6 +11,8 @@ __pycache__/
 venv/
 
 # local data
+backups/
+whisper/
 *.sqlite3
 *.db
 pgdata/

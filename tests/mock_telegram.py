@@ -23,6 +23,7 @@ class MockTelegram:
         self._message_id = 100
         self.messages: dict[int, dict] = {}  # всё, что бот отправил, по message_id
         self.fail_next: dict[str, str] = {}  # method -> описание ошибки для одного вызова
+        self.files: dict[str, bytes] = {}  # file_id -> содержимое, которое «лежит» в Telegram
         self._runner: web.AppRunner | None = None
         self.base = ""
 
@@ -31,6 +32,7 @@ class MockTelegram:
     async def start(self) -> None:
         app = web.Application()
         app.router.add_route("*", "/bot{token}/{method}", self._handle)
+        app.router.add_get("/file/bot{token}/{file_id}", self._download)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", 0)
@@ -56,6 +58,34 @@ class MockTelegram:
         elif text.startswith("/"):
             msg["entities"] = [{"type": "bot_command", "offset": 0, "length": len(text.split()[0])}]
         self._push({"message": msg})
+
+    def _user_media(self, user_id: int, **content: Any) -> None:
+        self._message_id += 1
+        self._push(
+            {
+                "message": {
+                    "message_id": self._message_id,
+                    "date": int(time.time()),
+                    "chat": {"id": user_id, "type": "private"},
+                    "from": {"id": user_id, "is_bot": False, "first_name": "User"},
+                    **content,
+                }
+            }
+        )
+
+    def user_voice(self, user_id: int, data: bytes = b"OggS-voice") -> None:
+        file_id = f"voice{len(self.files)}"
+        self.files[file_id] = data
+        self._user_media(
+            user_id, voice={"file_id": file_id, "file_unique_id": file_id, "duration": 30, "file_size": len(data)}
+        )
+
+    def user_document(self, user_id: int, name: str, data: bytes) -> None:
+        file_id = f"doc{len(self.files)}"
+        self.files[file_id] = data
+        self._user_media(
+            user_id, document={"file_id": file_id, "file_unique_id": file_id, "file_name": name, "file_size": len(data)}
+        )
 
     def press(self, user_id: int, card: dict, data: str) -> None:
         self._push(
@@ -110,6 +140,9 @@ class MockTelegram:
     async def _handle(self, request: web.Request) -> web.Response:
         method = request.match_info["method"]
         params: dict[str, Any] = dict(await request.post()) if request.can_read_body else {}
+        for key, value in list(params.items()):
+            if isinstance(value, web.FileField):  # загруженный файл: запоминаем содержимое
+                params[key] = value.file.read()
         for key in ("reply_markup", "options", "link_preview_options", "correct_option_ids", "commands"):
             if isinstance(params.get(key), str):
                 params[key] = json.loads(params[key])
@@ -133,6 +166,16 @@ class MockTelegram:
             return self._ok(BOT_USER)
         if method == "sendMessage":
             return self._ok(self._store(params, text=params["text"]))
+        if method == "getFile":
+            return self._ok(
+                {"file_id": params["file_id"], "file_unique_id": params["file_id"], "file_path": params["file_id"]}
+            )
+        if method == "sendPhoto":
+            ref = params.get("photo")
+            if isinstance(ref, str) and ref.startswith("attach://"):  # файл лежит в соседнем поле формы
+                params["photo"] = params.pop(ref.removeprefix("attach://"))
+            photo = [{"file_id": "ph", "file_unique_id": "ph", "width": 2160, "height": 2400}]
+            return self._ok(self._store(params, photo=photo, caption=params.get("caption", "")))
         if method == "sendPoll":
             poll = {
                 "id": "p1",
@@ -166,6 +209,9 @@ class MockTelegram:
                 msg.pop("reply_markup", None)
             return self._ok(msg)
         return self._ok(True)  # answerCallbackQuery, setMyCommands, deleteWebhook…
+
+    async def _download(self, request: web.Request) -> web.Response:
+        return web.Response(body=self.files[request.match_info["file_id"]])
 
     def _store(self, params: dict, **content: Any) -> dict:
         self._message_id += 1

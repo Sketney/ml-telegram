@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.config import DATA_DIR, Settings
+from app.rubrics import load_rubrics
 from app.scheduler import build_scheduler, load_schedule
 from app.sources.collectors import load_sources_config
 
@@ -12,7 +13,8 @@ from app.sources.collectors import load_sources_config
 def test_default_schedule_loads():
     schedule = load_schedule(DATA_DIR / "schedule.yaml")
     assert schedule.buffer >= 1 and schedule.slots
-    assert set(schedule.rubrics) <= {"concept", "history", "quiz", "paper", "tool", "release"}
+    assert set(schedule.rubrics) <= set(load_rubrics())
+    assert (schedule.stats_hour, schedule.stats_minute) == (9, 0)
 
 
 def test_slot_with_several_rubrics(tmp_path):
@@ -59,7 +61,8 @@ async def test_jobs_fire_in_channel_timezone():
     scheduler.start(paused=True)
     try:
         jobs = {j.id: j for j in scheduler.get_jobs()}
-        assert len(jobs) == 2 + len(schedule.slots)
+        assert len(jobs) == 3 + len(schedule.slots)
+        assert jobs["stats"].next_run_time.astimezone(ZoneInfo("Asia/Tbilisi")).hour == schedule.stats_hour
         collect = jobs["sources"].next_run_time.astimezone(ZoneInfo("Asia/Tbilisi"))
         assert (collect.hour, collect.minute) == (sources_cfg.collect_hour, sources_cfg.collect_minute)
         tz = ZoneInfo("Asia/Tbilisi")

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import PROMPTS_DIR
 from app.jsonutil import extract_json_object
 from app.llm import LLM
-from app.models import ItemStatus, SourceItem
+from app.models import ItemStatus, SourceItem, Topic, TopicStatus
 from app.rubrics import load_rubrics
 from app.sources.collectors import Found, SourcesConfig, collect
 from app.sources.http import FetchError, clean_markdown, fetch_text, html_to_text
@@ -77,10 +77,28 @@ def _rank_payload(items: list[SourceItem]) -> str:
     return json.dumps(rows, ensure_ascii=False)
 
 
+KNOWN_TOPICS_LIMIT = 80
+
+
+async def known_topics(session: AsyncSession) -> list[str]:
+    """Темы, по которым уже есть черновик или пост: чтобы не предлагать то же самое второй раз."""
+    rows = await session.scalars(
+        select(Topic.title)
+        .where(Topic.status == TopicStatus.USED.value)
+        .order_by(Topic.id.desc())
+        .limit(KNOWN_TOPICS_LIMIT)
+    )
+    return list(rows.all())
+
+
 async def rank_new(session: AsyncSession, llm: LLM) -> int:
     """Оценивает ещё не оценённые материалы. Возвращает, сколько оценено."""
     ranked = 0
     system = _rank_system_prompt()
+    known = await known_topics(session)
+    known_block = (
+        "Темы, о которых канал уже писал или пишет:\n" + "\n".join(f"- {t}" for t in known) + "\n\n" if known else ""
+    )
     for rubric in load_rubrics().values():
         if rubric.source != "feed":
             continue
@@ -97,7 +115,7 @@ async def rank_new(session: AsyncSession, llm: LLM) -> int:
             )
             if not items:
                 break
-            user = f"Рубрика: {rubric.key} ({rubric.title})\n\nМатериалы:\n{_rank_payload(items)}"
+            user = f"Рубрика: {rubric.key} ({rubric.title})\n\n{known_block}Материалы:\n{_rank_payload(items)}"
             try:
                 data = extract_json_object(await llm.complete(system, user, cheap=True))
             except ValueError as e:

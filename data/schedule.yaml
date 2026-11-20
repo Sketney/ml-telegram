@@ -13,8 +13,12 @@ prepare_at: "18:00"
 buffer: 1
 
 slots:
-  - { day: mon, time: "10:00", rubric: concept }
   # В слоте можно перечислить несколько рубрик: выйдет самый давно одобренный черновик любой из них.
-  - { day: wed, time: "10:00", rubrics: [tool, paper] }
+  # Так рубрики чередуются сами: неопубликованный черновик ждёт следующего слота, новый пока не готовится.
+  - { day: mon, time: "10:00", rubrics: [concept, interview] }
+  - { day: wed, time: "10:00", rubrics: [tool, paper, experiment, practice] }
   - { day: thu, time: "10:00", rubric: quiz }
-  - { day: fri, time: "10:00", rubric: history }
+  - { day: fri, time: "10:00", rubrics: [cheatsheet, history] }
+
+# Раз в день бот снимает просмотры постов с публичной страницы канала (команда /stats).
+stats_at: "09:00"

@@ -5,7 +5,8 @@ import contextlib
 
 import pytest
 
-from app import db, generator, moderation
+from app import db, generator, moderation, render
+from app import transcribe as stt
 from app.config import Settings
 from app.llm import FakeLLM
 from app.main import make_bot, make_dispatcher
@@ -14,6 +15,7 @@ from app.sources.collectors import SourcesConfig
 from tests.mock_telegram import MockTelegram
 
 ADMIN = 4242
+FAKE_PNG = b"\x89PNG\r\n\x1a\n-fake-cheatsheet"
 CHANNEL = "@test_channel"
 
 
@@ -41,8 +43,17 @@ def no_network(monkeypatch):
     async def fake_collect(cfg, now=None):
         raise AssertionError("тест должен подменить сбор источников сам")
 
+    async def fake_render(sheet, **kwargs):
+        return FAKE_PNG
+
+    async def fake_transcribe(data, settings):
+        return "Расшифровка голосового: " + "пришли разработчики и сказали, что балансировка не работает. " * 3
+
     monkeypatch.setattr(sources_service, "grounding_for", fake_grounding)
     monkeypatch.setattr(sources_service, "collect", fake_collect)
+    render.__dict__.setdefault("render_sheet_real", render.render_sheet)
+    monkeypatch.setattr(render, "render_sheet", fake_render)
+    monkeypatch.setattr(stt, "transcribe", fake_transcribe)
     moderation.set_slotted_rubrics(None)
     yield
     moderation.set_slotted_rubrics(None)
@@ -77,7 +88,7 @@ async def tg(settings, database, llm, sources_cfg):
     bot = make_bot(settings)
     dp = make_dispatcher(settings, llm, sources_cfg)
     polling = asyncio.create_task(dp.start_polling(bot, handle_signals=False, polling_timeout=1))
-    mock.bot, mock.llm, mock.cfg = bot, llm, sources_cfg
+    mock.bot, mock.llm, mock.cfg, mock.settings = bot, llm, sources_cfg, settings
     try:
         yield mock
     finally:

@@ -48,3 +48,39 @@ tool:
   source: feed
   min_len: 1500
   max_len: 2500
+
+# --- Ещё рубрики по бэклогу --------------------------------------------------------
+
+interview:
+  title: Вопрос с ML-собеса
+  hashtag: "#interview"
+  kind: post
+  min_len: 1000
+  max_len: 2000
+
+cheatsheet:           # kind: sheet — картинка-шпаргалка с короткой подписью
+  title: Шпаргалка
+  hashtag: "#cheatsheet"
+  kind: sheet
+  min_len: 200
+  max_len: 700
+
+# --- Рубрики по заметкам автора (source: notes) -----------------------------------
+# Сырьё присылает автор: /note experiment или /note practice, затем текст, файл или голосовое.
+# Голосовое без команды бот считает историей с работы.
+
+experiment:
+  title: Эксперимент
+  hashtag: "#experiment"
+  kind: post
+  source: notes
+  min_len: 1500
+  max_len: 3500
+
+practice:
+  title: История с работы
+  hashtag: "#practice"
+  kind: post
+  source: notes
+  min_len: 1200
+  max_len: 2500

@@ -28,6 +28,8 @@ services:
       # Промпты, бэклог и расписание правятся без пересборки образа: поменял файл → docker compose restart bot
       - ./prompts:/srv/prompts:ro
       - ./data:/srv/data:ro
+      - whisper:/srv/whisper
 
 volumes:
   pgdata:
+  whisper:

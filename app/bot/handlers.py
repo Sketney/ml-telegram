@@ -14,7 +14,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
-from app import db, generator, moderation
+from app import db, generator, metrics, moderation
+from app import transcribe as stt
 from app.bot.cards import STATUS_LABELS, DraftAction, card_text, draft_keyboard, draft_placeholders, send_card
 from app.bot.digest import ItemAction, send_digest, without_item
 from app.config import Settings
@@ -41,6 +42,14 @@ class FillPlaceholder(StatesGroup):
     waiting = State()
 
 
+class NotesInput(StatesGroup):
+    collecting = State()
+
+
+MAX_NOTES_FILE = 200_000  # байт: заметки — это текст, а не архив логов
+VOICE_RUBRIC = "practice"  # голосовое без команды — история с работы
+
+
 def rubric_list(source: str = "backlog") -> str:
     return "\n".join(
         f"<code>{key}</code> — {escape(r.title)}" for key, r in load_rubrics().items() if r.source == source
@@ -48,6 +57,13 @@ def rubric_list(source: str = "backlog") -> str:
 
 
 FEED_HINT = "Эта рубрика пишется по материалам из источников: выбери кандидата в /digest."
+NOTES_HINT = "Эта рубрика пишется по твоим заметкам: /note {rubric}, затем текст, файл или голосовое."
+
+
+def other_source_hint(rubric: str) -> str | None:
+    """Подсказка для рубрик, которые не берут темы из бэклога."""
+    source = load_rubrics()[rubric].source
+    return FEED_HINT if source == "feed" else NOTES_HINT.format(rubric=rubric) if source == "notes" else None
 
 
 HELP = (
@@ -61,9 +77,13 @@ HELP = (
     "/show <code>номер</code> — показать черновик ещё раз\n"
     "/digest — кандидаты из источников: статьи, релизы, инструменты\n"
     "/fetch — собрать источники сейчас\n"
+    "/note <code>рубрика</code> — пост по твоим заметкам: текст, файл или голосовое, затем /done\n"
+    "/stats — просмотры постов по рубрикам\n"
     "/cancel — отменить ввод\n\n"
+    "Голосовое без команды я расшифрую и превращу в «Историю с работы».\n\n"
     "<b>Рубрики по бэклогу</b>\n{rubrics}\n\n"
-    "<b>Рубрики по источникам</b> (через /digest)\n{feed_rubrics}"
+    "<b>Рубрики по источникам</b> (через /digest)\n{feed_rubrics}\n\n"
+    "<b>Рубрики по заметкам</b> (через /note)\n{notes_rubrics}"
 )
 
 
@@ -76,7 +96,10 @@ def build_router(admin_id: int) -> Router:
 
     @router.message(Command("start", "help"))
     async def cmd_help(message: Message) -> None:
-        await message.answer(HELP.format(rubrics=rubric_list(), feed_rubrics=rubric_list("feed")), parse_mode="HTML")
+        await message.answer(
+            HELP.format(rubrics=rubric_list(), feed_rubrics=rubric_list("feed"), notes_rubrics=rubric_list("notes")),
+            parse_mode="HTML",
+        )
 
     @router.message(Command("cancel"))
     async def cmd_cancel(message: Message, state: FSMContext) -> None:
@@ -98,8 +121,8 @@ def build_router(admin_id: int) -> Router:
         if rubric not in load_rubrics() or not title.strip():
             await message.answer("Формат: /add <code>рубрика тема</code>\n\n" + rubric_list(), parse_mode="HTML")
             return
-        if load_rubrics()[rubric].source == "feed":
-            await message.answer(FEED_HINT)
+        if hint := other_source_hint(rubric):
+            await message.answer(hint)
             return
         async with db.session() as s:
             topic = await generator.add_topic(s, rubric, title)
@@ -142,8 +165,8 @@ def build_router(admin_id: int) -> Router:
         if rubric not in load_rubrics():
             await message.answer("Формат: /gen <code>рубрика [тема]</code>\n\n" + rubric_list(), parse_mode="HTML")
             return
-        if load_rubrics()[rubric].source == "feed":
-            await message.answer(FEED_HINT)
+        if hint := other_source_hint(rubric):
+            await message.answer(hint)
             return
         await message.answer("Готовлю черновик…")
         async with db.session() as s:
@@ -168,6 +191,119 @@ def build_router(admin_id: int) -> Router:
                 await message.answer(f"Не получилось сгенерировать: {e}")
                 return
             await send_card(bot, message.chat.id, s, draft)
+
+    # --- заметки автора: эксперимент, история с работы ------------------------
+
+    async def draft_from_notes(
+        message: Message, bot: Bot, settings: Settings, llm: LLM, rubric: str, notes: str
+    ) -> None:
+        title = load_rubrics()[rubric].title
+        await message.answer(f"Готовлю «{title}» по твоим заметкам…")
+        async with db.session() as s:
+            try:
+                topic = await generator.topic_from_notes(s, rubric, notes)
+                draft = await generator.generate_draft(s, llm, settings, rubric, topic)
+            except Exception as e:
+                log.exception("черновик по заметкам не удался")
+                await message.answer(f"Не получилось подготовить черновик: {e}")
+                return
+            await send_card(bot, message.chat.id, s, draft)
+
+    async def voice_text(message: Message, bot: Bot, settings: Settings) -> str | None:
+        """Расшифровка голосового или аудио; None — не получилось, автору уже отвечено."""
+        media = message.voice or message.audio
+        await message.answer("Расшифровываю запись, это может занять до минуты…")
+        try:
+            buffer = await bot.download(media.file_id)
+            return await stt.transcribe(buffer.read(), settings)
+        except stt.TranscribeUnavailable as e:
+            await message.answer(f"Не получилось расшифровать: {e}. Можно прислать то же самое текстом.")
+        except TelegramAPIError as e:
+            await message.answer(f"Не получилось скачать запись: {e}")
+        return None
+
+    async def document_text(message: Message, bot: Bot) -> str | None:
+        doc = message.document
+        if (doc.file_size or 0) > MAX_NOTES_FILE:
+            await message.answer(f"Файл больше {MAX_NOTES_FILE // 1000} КБ. Пришли заметки, а не полный лог.")
+            return None
+        try:
+            return (await bot.download(doc.file_id)).read().decode("utf-8")
+        except UnicodeDecodeError:
+            await message.answer("Не могу прочитать файл как текст. Подойдут .txt и .md в UTF-8.")
+        except TelegramAPIError as e:
+            await message.answer(f"Не получилось скачать файл: {e}")
+        return None
+
+    @router.message(Command("note"))
+    async def cmd_note(message: Message, command: CommandObject, state: FSMContext) -> None:
+        rubric = (command.args or "").strip().split(" ")[0]
+        if rubric not in load_rubrics() or load_rubrics()[rubric].source != "notes":
+            await message.answer("Формат: /note <code>рубрика</code>\n\n" + rubric_list("notes"), parse_mode="HTML")
+            return
+        await state.set_state(NotesInput.collecting)
+        await state.update_data(rubric=rubric, parts=[])
+        await message.answer(
+            f"Присылай заметки для «{load_rubrics()[rubric].title}»: текст, файл .txt/.md или голосовые, "
+            "можно несколькими сообщениями. /done — готовить черновик, /cancel — отмена."
+        )
+
+    async def add_part(message: Message, state: FSMContext, text: str) -> None:
+        data = await state.get_data()
+        parts = [*data.get("parts", []), text.strip()]
+        await state.update_data(parts=parts)
+        await message.answer(f"Принял. Всего {sum(len(p) for p in parts)} символов. /done — готовить черновик.")
+
+    @router.message(Command("done"), StateFilter(NotesInput.collecting))
+    async def cmd_done(message: Message, state: FSMContext, bot: Bot, settings: Settings, llm: LLM) -> None:
+        data = await state.get_data()
+        notes = "\n\n".join(data.get("parts", []))
+        if not notes.strip():
+            await message.answer("Заметок пока нет: пришли текст, файл или голосовое. /cancel — отмена.")
+            return
+        await state.clear()
+        await draft_from_notes(message, bot, settings, llm, data["rubric"], notes)
+
+    @router.message(StateFilter(NotesInput.collecting), F.text, ~F.text.startswith("/"))
+    async def on_notes_text(message: Message, state: FSMContext) -> None:
+        await add_part(message, state, message.text)
+
+    @router.message(StateFilter(NotesInput.collecting), F.voice | F.audio)
+    async def on_notes_voice(message: Message, state: FSMContext, bot: Bot, settings: Settings) -> None:
+        if text := await voice_text(message, bot, settings):
+            await add_part(message, state, text)
+
+    @router.message(StateFilter(NotesInput.collecting), F.document)
+    async def on_notes_file(message: Message, state: FSMContext, bot: Bot) -> None:
+        if text := await document_text(message, bot):
+            await add_part(message, state, text)
+
+    @router.message(StateFilter(None), F.voice | F.audio)
+    async def on_voice(message: Message, bot: Bot, settings: Settings, llm: LLM) -> None:
+        if text := await voice_text(message, bot, settings):
+            await draft_from_notes(message, bot, settings, llm, VOICE_RUBRIC, text)
+
+    # --- статистика -----------------------------------------------------------
+
+    @router.message(Command("stats"))
+    async def cmd_stats(message: Message, settings: Settings) -> None:
+        async with db.session() as s:
+            note = ""
+            try:
+                await metrics.refresh(s, settings)
+            except metrics.StatsUnavailable as e:
+                note = f"\n\nСвежие просмотры получить не удалось: {escape(str(e))}"
+            by_rubric, top_posts, missing = await metrics.summary(s)
+        if not by_rubric:
+            await message.answer("Данных о просмотрах пока нет: нужен хотя бы один опубликованный пост." + note)
+            return
+        lines = ["<b>Просмотры по рубрикам</b>"]
+        lines += [f"{escape(r.title)}: в среднем {r.avg_views:.0f} · постов {r.posts}" for r in by_rubric]
+        lines.append("\n<b>Лучшие посты</b>")
+        lines += [f"{views} — {escape(rubric)}: {escape(title[:60])}" for rubric, title, views in top_posts]
+        if missing:
+            lines.append(f"\nБез данных постов: {missing} (слишком старые или ещё не попали на страницу канала).")
+        await message.answer("\n".join(lines) + note, parse_mode="HTML")
 
     # --- источники ----------------------------------------------------------
 
@@ -392,6 +528,10 @@ def build_router(admin_id: int) -> Router:
     @router.message(StateFilter(EditText.waiting, RegenComment.waiting, FillPlaceholder.waiting))
     async def on_not_text(message: Message) -> None:
         await message.answer("Жду текст одним сообщением. /cancel — отмена.")
+
+    @router.message(StateFilter(NotesInput.collecting))
+    async def on_notes_other(message: Message) -> None:
+        await message.answer("Жду заметки: текст, файл .txt/.md или голосовое. /done — готовить, /cancel — отмена.")
 
     @router.message()
     async def fallback(message: Message) -> None:

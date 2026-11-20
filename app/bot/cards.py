@@ -47,8 +47,8 @@ def draft_keyboard(draft: Draft) -> InlineKeyboardMarkup | None:
     if placeholders:
         rows.append([btn(f"🧩 Вписать: {placeholders[0].strip('{}')}"[:40], "fill")])
     second = [btn("🔄 Заново", "regen"), btn("💬 С комментарием", "regenc")]
-    if draft.payload.get("kind") == "post":
-        second.insert(0, btn("✏️ Править", "edit"))
+    if draft.payload.get("kind") in ("post", "sheet"):
+        second.insert(0, btn("✏️ Править" if draft.payload["kind"] == "post" else "✏️ Подпись", "edit"))
     rows.append(second)
     last = [btn("❌ Отклонить", "no")]
     if draft.status != DraftStatus.POSTPONED.value:
@@ -87,7 +87,7 @@ async def card_text(session: AsyncSession, draft: Draft, note: str = "") -> str:
 
 async def send_card(bot: Bot, chat_id: int, session: AsyncSession, draft: Draft, note: str = "") -> Message:
     """Превью (как в канале) и следом сообщение с кнопками."""
-    await send_preview(bot, chat_id, draft)
+    await send_preview(bot, chat_id, draft, await moderation.draft_image(session, draft))
     return await bot.send_message(
         chat_id=chat_id,
         text=await card_text(session, draft, note),

@@ -10,6 +10,7 @@ import re
 from html.parser import HTMLParser
 
 TG_TEXT_LIMIT = 4096
+CAPTION_LIMIT = 1024  # подпись к фото
 QUIZ_QUESTION_LIMIT = 300
 QUIZ_OPTION_LIMIT = 100
 QUIZ_EXPLANATION_LIMIT = 200
@@ -109,7 +110,9 @@ def find_placeholders(html: str) -> list[str]:
     return list(dict.fromkeys(_PLACEHOLDER_RE.findall("".join(parser.prose))))
 
 
-def validate_post_html(html: str, *, min_len: int = 0, max_len: int = TG_TEXT_LIMIT) -> list[dict]:
+def validate_post_html(
+    html: str, *, min_len: int = 0, max_len: int = TG_TEXT_LIMIT, hard_limit: int = TG_TEXT_LIMIT
+) -> list[dict]:
     issues: list[dict] = []
     if not html.strip():
         return [issue("error", "пустой текст")]
@@ -131,8 +134,8 @@ def validate_post_html(html: str, *, min_len: int = 0, max_len: int = TG_TEXT_LI
     visible = "".join(parser.visible)
     prose = "".join(parser.prose)
     length = utf16_len(visible)
-    if length > TG_TEXT_LIMIT:
-        issues.append(issue("error", f"длина {length} символов, лимит Telegram — {TG_TEXT_LIMIT}"))
+    if length > hard_limit:
+        issues.append(issue("error", f"длина {length} символов, лимит Telegram — {hard_limit}"))
     elif length > max_len * (1 + LENGTH_TOLERANCE):
         issues.append(issue("warn", f"длина {length} символов, для рубрики рекомендовано до {max_len}"))
     elif length < min_len * (1 - LENGTH_TOLERANCE):
@@ -188,7 +191,49 @@ def validate_quiz(payload: dict) -> list[dict]:
     return issues
 
 
+def validate_sheet(payload: dict, *, min_len: int = 0, max_len: int = CAPTION_LIMIT) -> list[dict]:
+    """Шпаргалка: подпись к фото (жёсткий лимит Telegram — 1024 символа) и данные для картинки."""
+    issues = validate_post_html(
+        str(payload.get("html") or ""), min_len=min_len, max_len=min(max_len, CAPTION_LIMIT), hard_limit=CAPTION_LIMIT
+    )
+    sheet = payload.get("sheet") if isinstance(payload.get("sheet"), dict) else {}
+    sections = sheet.get("sections") if isinstance(sheet.get("sections"), list) else []
+
+    def too_long(what: str, text: str, limit: int) -> None:
+        if len(text) > limit:
+            issues.append(issue("warn", f"{what} длиннее {limit} символов и может не поместиться: «{text[:40]}…»"))
+
+    title = str(sheet.get("title") or "")
+    if not title:
+        issues.append(issue("error", "у шпаргалки нет заголовка"))
+    too_long("заголовок шпаргалки", title, 70)
+    too_long("подзаголовок шпаргалки", str(sheet.get("subtitle") or ""), 130)
+    too_long("главная мысль шпаргалки", str(sheet.get("takeaway") or ""), 170)
+    if not 2 <= len(sections) <= 6:
+        issues.append(issue("error", f"блоков в шпаргалке {len(sections)}, нужно от 2 до 6"))
+    rows = 0
+    for n, section in enumerate(sections, 1):
+        items = section.get("items") or []
+        if not section.get("heading"):
+            issues.append(issue("error", f"у блока {n} шпаргалки нет заголовка"))
+        too_long(f"заголовок блока {n}", str(section.get("heading") or ""), 48)
+        if not 1 <= len(items) <= 7:
+            issues.append(issue("error", f"в блоке {n} шпаргалки строк {len(items)}, нужно от 1 до 7"))
+        for item in items:
+            if not item.get("term") or not item.get("text"):
+                issues.append(issue("error", f"в блоке {n} шпаргалки есть пустая строка"))
+                break
+            too_long("термин", item["term"], 34)
+            too_long("строка", item["text"], 115)
+        rows += len(items)
+    if rows > 26:
+        issues.append(issue("warn", f"в шпаргалке {rows} строк: картинка выйдет очень длинной"))
+    return issues
+
+
 def validate_payload(payload: dict, *, min_len: int = 0, max_len: int = TG_TEXT_LIMIT) -> list[dict]:
     if payload.get("kind") == "quiz":
         return validate_quiz(payload)
+    if payload.get("kind") == "sheet":
+        return validate_sheet(payload, min_len=min_len, max_len=max_len)
     return validate_post_html(str(payload.get("html") or ""), min_len=min_len, max_len=max_len)
