@@ -61,6 +61,11 @@ SHEET_MAX_SECTIONS = 3
 SHEET_MAX_ROWS = 9
 
 
+# Ярлык-рубрикатор в начале абзаца: «<b>Как работает:</b> …», «🧠 <b>Где встретишь:</b> …»
+_LABEL_RE = re.compile(r"^(?:\S{1,4} )?<(?:b|strong)>([^<\n]{2,40}):</(?:b|strong)>", re.MULTILINE)
+AUTHOR_LABELS = ("Мой опыт", "Моё мнение")  # блок автора подписан намеренно
+
+
 def issue(level: str, text: str) -> dict:
     return {"level": level, "text": text}
 
@@ -169,6 +174,11 @@ def validate_post_html(
     for phrase in STOP_PHRASES:
         if phrase in low:
             issues.append(issue("warn", f"стоп-фраза из стайлгайда: «{phrase}»"))
+
+    labels = [m for m in _LABEL_RE.findall(html) if m.strip() not in AUTHOR_LABELS]
+    if len(labels) >= 2:
+        shown = ", ".join(f"«{m.strip()}:»" for m in labels[:3])
+        issues.append(issue("warn", f"абзацы начинаются с ярлыков ({shown}): по стайлгайду пост — связный текст"))
 
     bold = len(re.findall(r"<(?:b|strong)>", html))
     if bold > 8:

@@ -93,3 +93,11 @@ def test_quiz_limits_and_index():
     assert any("correct_index" in e for e in levels(validate_quiz({**QUIZ, "correct_index": None}), "error"))
     assert any("повторяются" in e for e in levels(validate_quiz({**QUIZ, "options": ["а", "А", "б", "в"]}), "error"))
     assert any("explanation" in w for w in levels(validate_quiz({**QUIZ, "explanation": ""}), "warn"))
+
+
+def test_label_openers_are_flagged_but_author_block_is_not():
+    form = "<b>Заголовок: тема</b>\n\n<b>Если коротко:</b> суть.\n\n<b>Как работает:</b> шаги.\n\n🧠 <b>Где встретишь:</b> везде."
+    warns = levels(validate_post_html(form), "warn")
+    assert any("начинаются с ярлыков" in w and "«Если коротко:»" in w for w in warns)
+    story = "<b>Заголовок: тема</b>\n\n<b>Эмбеддинг</b> — это вектор.\n\n<b>Мой опыт:</b> запускал.\n\n<b>Моё мнение:</b> годится."
+    assert not any("ярлыков" in w for w in levels(validate_post_html(story), "warn"))
