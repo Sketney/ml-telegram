@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 
 import pytest
@@ -73,8 +74,13 @@ async def test_fetch_reports_and_sends_digest(tg, collected):
     assert '<a href="https://lab.example/new-model">New &lt;Model&gt; 7B</a>' in sent["text"]  # заголовок экранирован
     assert "7/10" in sent["text"] and "Lab" in sent["text"]
     assert list(tg.buttons(digests["Релиз с разбором"])) == ["✍️ 1", "🚫 1"]
-    async with db.session() as s:
-        assert set((await s.scalars(select(SourceItem.status))).all()) == {ItemStatus.OFFERED.value}
+    for _ in range(100):  # отметка «показан» ставится сразу после отправки последнего дайджеста
+        async with db.session() as s:
+            statuses = set((await s.scalars(select(SourceItem.status))).all())
+        if statuses == {ItemStatus.OFFERED.value}:
+            break
+        await asyncio.sleep(0.02)
+    assert statuses == {ItemStatus.OFFERED.value}
 
     # повторный сбор: материалы уже известны, новых кандидатов нет
     tg.user_message(ADMIN, "/fetch")
