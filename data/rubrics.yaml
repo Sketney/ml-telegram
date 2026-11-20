@@ -108,5 +108,5 @@ course:
   hashtag: "#EML_course"
   kind: post
   series: true
-  min_len: 1200
-  max_len: 2200
+  min_len: 1500
+  max_len: 2800
