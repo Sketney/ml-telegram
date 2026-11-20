@@ -111,3 +111,13 @@ class PostStats(Base):
     draft_id: Mapped[int] = mapped_column(ForeignKey("drafts.id"), primary_key=True)
     views: Mapped[int] = mapped_column(Integer)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class KeyValue(Base):
+    """Служебные значения, которые бот должен помнить между запусками (например, id поста-оглавления курса)."""
+
+    __tablename__ = "kv"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

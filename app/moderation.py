@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import Bot
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import covers
+from app import course, covers
 from app.config import Settings
 from app.models import Draft, DraftImage, DraftStatus, Topic, TopicStatus, utcnow
 from app.publisher import NoImage, send_draft
 from app.rubrics import get_rubric
 from app.validator import find_placeholders, validate_payload
+
+log = logging.getLogger(__name__)
 
 
 class NotAllowed(Exception):
@@ -83,7 +87,23 @@ async def publish(session: AsyncSession, bot: Bot, settings: Settings, draft: Dr
     draft.published_at = utcnow()
     draft.channel_message_id = msg.message_id
     await session.commit()
+    if get_rubric(draft.rubric).series:
+        await _update_course_toc(session, bot, settings, draft)
     return draft
+
+
+async def _update_course_toc(session: AsyncSession, bot: Bot, settings: Settings, draft: Draft) -> None:
+    """Оглавление курса обновляется после выхода урока. Сбой здесь публикацию урока не отменяет."""
+    try:
+        note = await course.update_toc(session, bot, settings, draft.rubric, channel_chat_id(settings))
+    except Exception as e:
+        log.exception("оглавление курса не обновилось")
+        note = f"Урок вышел, но оглавление курса не обновилось: {e}"
+    if note:
+        try:
+            await bot.send_message(settings.admin_id, note)
+        except Exception:
+            log.exception("не удалось написать автору: %s", note)
 
 
 async def postpone(session: AsyncSession, draft: Draft) -> Draft:
@@ -94,13 +114,17 @@ async def postpone(session: AsyncSession, draft: Draft) -> Draft:
 
 
 async def reject(session: AsyncSession, draft: Draft) -> Draft:
-    """В архив; тема помечается, чтобы бот не предложил её снова."""
+    """В архив; тема помечается, чтобы бот не предложил её снова.
+
+    Урок курса пропустить нельзя: отклонён черновик, а не урок, поэтому он возвращается в очередь.
+    """
     ensure_open(draft)
     draft.status = DraftStatus.REJECTED.value
     if draft.topic_id:
         topic = await session.get(Topic, draft.topic_id)
         if topic:
-            topic.status = TopicStatus.SKIPPED.value
+            series = get_rubric(draft.rubric).series
+            topic.status = TopicStatus.NEW.value if series else TopicStatus.SKIPPED.value
     await session.commit()
     return draft
 

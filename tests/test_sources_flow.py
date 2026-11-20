@@ -90,7 +90,13 @@ async def test_fetch_reports_and_sends_digest(tg, collected):
     await tg.wait_for(lambda: sum("Кандидаты:" in m["text"] for m in tg.sent("sendMessage", ADMIN)) == 6)
 
 
-async def test_write_tool_fill_own_block_and_publish(tg, collected, llm):
+async def test_tool_draft_needs_nothing_from_the_author_by_default(tg, collected):
+    card = await press_and_wait_card(tg, (await fetch(tg))["Инструмент недели"], "✍️ 1")
+    assert "🧩" not in card["text"] and "{Мой опыт}" not in card["text"]
+    assert "✅ Сейчас" in tg.buttons(card) and not any(b.startswith("🧩") for b in tg.buttons(card))
+
+
+async def test_write_tool_fill_own_block_and_publish(tg, collected, llm, author_blocks):
     digest = (await fetch(tg))["Инструмент недели"]
     card = await press_and_wait_card(tg, digest, "✍️ 1")
 
@@ -183,7 +189,7 @@ async def test_feed_rubrics_are_not_generated_from_backlog(tg):
         assert (await s.scalars(select(Draft))).all() == []
 
 
-async def test_rubric_without_slot_has_no_schedule_button(tg, collected):
+async def test_rubric_without_slot_has_no_schedule_button(tg, collected, author_blocks):
     moderation.set_slotted_rubrics({"concept", "paper", "tool"})  # у release слота нет
     digests = await fetch(tg)
     release, paper = digests["Релиз с разбором"], digests["Разбор статьи"]

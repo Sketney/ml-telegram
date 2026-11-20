@@ -34,11 +34,15 @@ paper:
   min_len: 1500
   max_len: 3000
 
+# author_block — блок, который автор вписывает сам: в черновике появляется заглушка и кнопка 🧩,
+# публикация закрыта, пока блок не заполнен. Сейчас выключен; включить — раскомментировать строку.
+
 release:
   title: Релиз с разбором
   hashtag: "#EML_release"
   kind: post
   source: feed
+  # author_block: Моё мнение
   min_len: 1200
   max_len: 2500
 
@@ -47,6 +51,7 @@ tool:
   hashtag: "#EML_tool"
   kind: post
   source: feed
+  # author_block: Мой опыт
   min_len: 1500
   max_len: 2500
 
@@ -93,3 +98,15 @@ practice:
   source: notes
   min_len: 1200
   max_len: 2500
+
+# --- Курс (series: true) -----------------------------------------------------------------
+# Уроки идут по порядку из data/course.yaml, а не из бэклога. Бот ставит в пост ссылку на предыдущий урок
+# и ведёт в канале закреплённое оглавление. Отклонённый черновик урок не пропускает: урок пишется заново.
+
+course:
+  title: ML с нуля
+  hashtag: "#EML_course"
+  kind: post
+  series: true
+  min_len: 1200
+  max_len: 2200

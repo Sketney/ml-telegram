@@ -64,6 +64,12 @@ GROUNDED_HINT = (
 )
 
 
+SERIES_HINT = (
+    "Уроки курса идут по программе из data/course.yaml, свою тему сюда добавить нельзя.\n"
+    "/gen {rubric} — черновик следующего урока."
+)
+
+
 def split_facts(text: str) -> tuple[str, str]:
     """«заголовок | факты и ссылка» → (заголовок, факты)."""
     title, _, facts = text.partition("|")
@@ -138,6 +144,9 @@ def build_router(admin_id: int) -> Router:
         async with db.session() as s:
             try:
                 topic = await generator.add_topic(s, rubric, title, facts)
+            except generator.SeriesTopic:
+                await message.answer(SERIES_HINT.format(rubric=rubric))
+                return
             except ValueError:
                 await message.answer(GROUNDED_HINT.format(rubric=rubric))
                 return
@@ -191,6 +200,9 @@ def build_router(admin_id: int) -> Router:
                     title, facts = split_facts(title) if load_rubrics()[rubric].grounded else (title, "")
                     try:
                         topic = await generator.add_topic(s, rubric, title, facts)
+                    except generator.SeriesTopic:
+                        await message.answer(SERIES_HINT.format(rubric=rubric))
+                        return
                     except ValueError:
                         await message.answer(GROUNDED_HINT.format(rubric=rubric))
                         return
@@ -201,7 +213,10 @@ def build_router(admin_id: int) -> Router:
                             return
                 draft = await generator.generate_draft(s, llm, settings, rubric, topic)
             except generator.NoTopics:
-                await message.answer(f"В бэклоге рубрики закончились темы. Добавь: /add {rubric} тема")
+                if load_rubrics()[rubric].series:
+                    await message.answer("Все уроки программы уже написаны. Новые добавляются в data/course.yaml.")
+                else:
+                    await message.answer(f"В бэклоге рубрики закончились темы. Добавь: /add {rubric} тема")
                 return
             except generator.TopicTaken:
                 await message.answer("По этой теме черновик уже готовится или готов. Смотри /queue.")

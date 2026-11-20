@@ -11,7 +11,7 @@ import yaml
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import factcheck, render
+from app import course, factcheck, render
 from app.config import DATA_DIR, Settings
 from app.jsonutil import extract_json_object
 from app.llm import LLM
@@ -41,6 +41,10 @@ class NoTopics(Exception):
 
 class GenerationFailed(Exception):
     """Модель не вернула разборчивый ответ."""
+
+
+class SeriesTopic(Exception):
+    """Уроки курса идут по программе: свою тему в такую рубрику добавить нельзя."""
 
 
 class TopicTaken(Exception):
@@ -76,11 +80,16 @@ async def sync_backlog(session: AsyncSession, path: Path | None = None) -> int:
                 existing.add(title)
                 added += 1
     await session.commit()
+    for key, rubric in known.items():
+        if rubric.series:  # уроки курса берутся из программы, а не из backlog.yaml
+            added += await course.sync(session, key)
     return added
 
 
 async def add_topic(session: AsyncSession, rubric: str, title: str, notes: str = "") -> Topic | None:
     """None — такая тема в этой рубрике уже есть."""
+    if get_rubric(rubric).series:
+        raise SeriesTopic(rubric)
     if get_rubric(rubric).grounded and (len(notes.strip()) < MIN_NOTES_CHARS or not source_link(notes)):
         raise ValueError("нужны факты и ссылка на источник")
     title = title.strip()
@@ -94,6 +103,11 @@ async def add_topic(session: AsyncSession, rubric: str, title: str, notes: str =
 
 
 async def next_topic(session: AsyncSession, rubric: str) -> Topic:
+    if get_rubric(rubric).series:
+        topic = await course.next_lesson_topic(session, rubric)
+        if topic is None:
+            raise NoTopics(rubric)
+        return topic
     topic = await session.scalar(
         select(Topic).where(Topic.rubric == rubric, Topic.status == TopicStatus.NEW.value).order_by(Topic.id).limit(1)
     )
@@ -166,16 +180,16 @@ def parse_json_object(text: str) -> dict:
         raise GenerationFailed(str(e)) from e
 
 
-def compose_post_html(body: str, rubric: Rubric, settings: Settings) -> str:
-    """Тело поста от модели + хештег рубрики + подпись канала."""
+def compose_post_html(body: str, rubric: Rubric, settings: Settings, nav: str = "") -> str:
+    """Тело поста от модели + навигация курса + хештег рубрики + подпись канала."""
     parts = [body.strip().replace("{E}", settings.brand_emoji)]
-    tail = "\n".join(x for x in (rubric.hashtag, settings.channel_signature.strip()) if x)
+    tail = "\n".join(x for x in (nav, rubric.hashtag, settings.channel_signature.strip()) if x)
     if tail:
         parts.append(tail)
     return "\n\n".join(parts)
 
 
-def build_payload(data: dict, rubric: Rubric, settings: Settings) -> dict:
+def build_payload(data: dict, rubric: Rubric, settings: Settings, nav: str = "") -> dict:
     if rubric.kind == "quiz":
         options = data.get("options")
         if isinstance(options, list):
@@ -216,7 +230,7 @@ def build_payload(data: dict, rubric: Rubric, settings: Settings) -> dict:
     body = data.get("html")
     if not isinstance(body, str) or not body.strip():
         raise GenerationFailed("в ответе модели нет поля html")
-    payload = {"kind": "post", "html": compose_post_html(body, rubric, settings)}
+    payload = {"kind": "post", "html": compose_post_html(body, rubric, settings, nav)}
     cover = data.get("cover")
     if isinstance(cover, str) and cover.strip():
         payload["cover"] = " ".join(cover.split())[:120]  # надпись для обложки поста
@@ -231,10 +245,13 @@ def build_user_prompt(
     source: tuple[SourceItem, str, str] | None = None,
     raw_notes: str = "",
     facts: str = "",
+    lesson: str = "",
 ) -> str:
     lines = [f"Тема: {topic_title}"]
     if notes:
         lines.append(f"Пожелания автора к теме: {notes}")
+    if lesson:
+        lines += ["", "Ниже данные урока из программы курса.", lesson]
     if facts:
         lines += [
             "",
@@ -272,7 +289,9 @@ def build_user_prompt(
     return "\n".join(lines)
 
 
-async def _generate_payload(llm: LLM, settings: Settings, rubric: Rubric, user_prompt: str) -> tuple[dict, list[dict]]:
+async def _generate_payload(
+    llm: LLM, settings: Settings, rubric: Rubric, user_prompt: str, nav: str = ""
+) -> tuple[dict, list[dict]]:
     """Один вызов модели + одна попытка исправления, если валидатор нашёл ошибки."""
     system = build_system_prompt(rubric.key, settings.brand_emoji)
     payload: dict | None = None
@@ -282,7 +301,7 @@ async def _generate_payload(llm: LLM, settings: Settings, rubric: Rubric, user_p
     for attempt in (1, 2):
         try:
             raw = await llm.complete(system, prompt)
-            payload = build_payload(parse_json_object(raw), rubric, settings)
+            payload = build_payload(parse_json_object(raw), rubric, settings, nav)
         except GenerationFailed as e:
             last_error = e
             log.warning("рубрика %s, попытка %s: %s", rubric.key, attempt, e)
@@ -327,6 +346,14 @@ async def _prompt_and_material(
     previous: dict | None = None,
 ) -> tuple[str, str | None]:
     """Запрос к модели и материал, с которым потом сверяется готовый пост (None — сверять не с чем)."""
+    if rubric.series:
+        program = course.load_course()
+        lesson = program.by_number(course.lesson_number(title))
+        if lesson is None:
+            raise GenerationFailed(f"урока «{title}» нет в программе курса (data/course.yaml)")
+        block = course.prompt_block(program, lesson)
+        # сверять нечем: урок шире своих тезисов, фактчек счёл бы «неподтверждённым» каждое объяснение
+        return build_user_prompt(title, comment=comment, previous=previous, lesson=block), None
     if rubric.source == "notes":
         if len(notes.strip()) < MIN_NOTES_CHARS:
             raise GenerationFailed(
@@ -422,6 +449,21 @@ async def _finish(
         draft.issues = [*draft.issues, *extra]
 
 
+async def _series_nav(session: AsyncSession, settings: Settings, rubric: Rubric, title: str) -> tuple[str, str]:
+    """Для урока курса: строка со ссылкой на предыдущий урок и замечание, если его ещё нет в канале."""
+    if not rubric.series:
+        return "", ""
+    return await course.nav_html(session, settings, rubric.key, title)
+
+
+def _series_finish(rubric: Rubric, payload: dict, issues: list[dict], title: str, nav_note: str) -> list[dict]:
+    """У урока курса надпись на обложке — его номер и название, а не то, что придумала модель."""
+    if not rubric.series:
+        return issues
+    payload["cover"] = title
+    return [*issues, {"level": "warn", "text": nav_note}] if nav_note else issues
+
+
 async def generate_draft(
     session: AsyncSession, llm: LLM, settings: Settings, rubric_key: str, topic: Topic | None = None
 ) -> Draft:
@@ -431,7 +473,9 @@ async def generate_draft(
     topic_id = topic.id  # после rollback атрибуты объекта недоступны без запроса к базе
     try:
         prompt, material = await _prompt_and_material(session, rubric, topic_id, topic.title, topic.notes)
-        payload, issues = await _generate_payload(llm, settings, rubric, prompt)
+        nav, nav_note = await _series_nav(session, settings, rubric, topic.title)
+        payload, issues = await _generate_payload(llm, settings, rubric, prompt, nav)
+        issues = _series_finish(rubric, payload, issues, topic.title, nav_note)
         draft = Draft(rubric=rubric_key, topic_id=topic_id, payload=payload, issues=issues)
         session.add(draft)
         await session.flush()
@@ -457,9 +501,10 @@ async def regenerate_draft(
         if isinstance(previous.get("options"), list):  # служебный вариант модели не показываем
             previous["options"] = [o for o in previous["options"] if o != SHOW_ANSWER_OPTION]
     prompt, material = await _prompt_and_material(session, rubric, draft.topic_id, title, notes, comment, previous)
-    payload, issues = await _generate_payload(llm, settings, rubric, prompt)
+    nav, nav_note = await _series_nav(session, settings, rubric, title)
+    payload, issues = await _generate_payload(llm, settings, rubric, prompt, nav)
     draft.payload = payload
-    draft.issues = issues
+    draft.issues = _series_finish(rubric, payload, issues, title, nav_note)
     draft.version += 1
     draft.status = DraftStatus.PENDING.value
     await _finish(session, llm, settings, draft, material, prompt)

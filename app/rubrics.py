@@ -27,6 +27,11 @@ class Rubric:
     grounded: bool = False
     # Делать ли посту обложку (только для kind: post). Выключается строкой cover: false в rubrics.yaml.
     cover: bool = True
+    # Блок, который автор вписывает сам («Мой опыт», «Моё мнение»). Задан — в черновике появляется
+    # заглушка, и публикация закрыта, пока автор её не заполнит. Пусто — блока нет.
+    author_block: str = ""
+    # Рубрика-курс: уроки идут по программе из data/course.yaml, а не из бэклога.
+    series: bool = False
 
 
 @lru_cache
@@ -50,6 +55,8 @@ def load_rubrics(path: str | None = None) -> dict[str, Rubric]:
             source=source,
             grounded=bool(cfg.get("grounded", False)),
             cover=kind == "post" and bool(cfg.get("cover", True)),
+            author_block=str(cfg.get("author_block") or "").strip(),
+            series=bool(cfg.get("series", False)),
         )
     return rubrics
 
@@ -86,5 +93,14 @@ def build_system_prompt(rubric_key: str, brand_emoji: str, prompts_dir: Path = P
             "# Эталонные посты автора\n\n"
             "Ниже посты, написанные автором вручную. Перенимай их тон, ритм и лексику, "
             "но не копируй содержание и формулировки.\n\n" + block,
+        )
+    block = get_rubric(rubric_key).author_block
+    if block:
+        parts.append(
+            "# Блок автора\n\n"
+            "Перед сворачиваемой цитатой (а если её нет — перед последней строкой со ссылкой) поставь строку "
+            "буквально, вместе с фигурными скобками:\n\n"
+            f"<b>{block}:</b> {{{block}}}\n\n"
+            "Этот блок автор канала впишет сам. Не пиши его за автора."
         )
     return "\n\n".join(parts).replace("{E}", brand_emoji)

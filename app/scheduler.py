@@ -108,6 +108,8 @@ async def prepare_job(bot: Bot, settings: Settings, llm: LLM, schedule: Schedule
                     draft = await generator.generate_draft(s, llm, settings, rubric_key)
                     await send_card(bot, settings.admin_id, s, draft, note="Плановый черновик к ближайшему слоту.")
             except generator.NoTopics:
+                if get_rubric(rubric_key).series:
+                    continue  # курс дописан до конца программы: напоминать об этом каждый день незачем
                 await _notify(bot, settings, f"«{title}»: в бэклоге закончились темы. Добавь: /add {rubric_key} тема")
             except Exception as e:
                 log.exception("подготовка черновика %s не удалась", rubric_key)

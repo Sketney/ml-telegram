@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from dataclasses import replace
 
 import pytest
 
-from app import covers, db, generator, moderation, render
+from app import covers, db, generator, moderation, render, rubrics
 from app import transcribe as stt
 from app.config import Settings
 from app.llm import FakeLLM
@@ -107,3 +108,15 @@ async def tg(settings, database, llm, sources_cfg):
             await polling
         await bot.session.close()
         await mock.stop()
+
+
+@pytest.fixture
+def author_blocks(monkeypatch):
+    """Включает блок автора у рубрик «Инструмент недели» и «Релиз с разбором» (в rubrics.yaml он выключен)."""
+    real = rubrics.load_rubrics()
+    patched = {
+        **real,
+        "tool": replace(real["tool"], author_block="Мой опыт"),
+        "release": replace(real["release"], author_block="Моё мнение"),
+    }
+    monkeypatch.setattr(rubrics, "load_rubrics", lambda path=None: patched)
