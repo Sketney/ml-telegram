@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 from sqlalchemy import select
 
 from app import db, generator, moderation
-from app.generator import SHOW_ANSWER_OPTION, GenerationFailed, NoTopics, parse_json_object
+from app.generator import SHOW_ANSWER_OPTION, GenerationFailed, NoTopics, TopicTaken, parse_json_object
 from app.models import Draft, DraftStatus, Topic, TopicStatus
 from app.rubrics import build_system_prompt, load_rubrics
 
@@ -156,3 +157,29 @@ async def test_add_topic_dedup(database):
         assert await generator.add_topic(s, "concept", "Совсем новая тема") is None
         with pytest.raises(KeyError):
             await generator.add_topic(s, "nope", "x")
+
+
+class SlowLLM:
+    """Отвечает с задержкой, как настоящая модель: за это время успевает стартовать вторая генерация."""
+
+    async def complete(self, system: str, user: str, *, cheap: bool = False) -> str:
+        await asyncio.sleep(0.2)
+        return json.dumps({"html": "<b>пост</b>"})
+
+
+async def test_concurrent_generations_take_different_topics(database, settings):
+    async def one() -> int:
+        async with db.session() as s:
+            return (await generator.generate_draft(s, SlowLLM(), settings, "history")).topic_id
+
+    topic_ids = await asyncio.gather(one(), one(), one())
+    assert len(set(topic_ids)) == 3, topic_ids
+
+
+async def test_explicit_topic_cannot_be_generated_twice(database, settings, llm):
+    async with db.session() as s:
+        topic = await generator.add_topic(s, "concept", "Своя тема")
+        await generator.generate_draft(s, llm, settings, "concept", topic)
+        with pytest.raises(TopicTaken):
+            await generator.generate_draft(s, llm, settings, "concept", topic)
+        assert len((await s.scalars(select(Draft))).all()) == 1

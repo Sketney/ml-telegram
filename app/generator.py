@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 import yaml
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import DATA_DIR, Settings
@@ -27,6 +27,10 @@ class NoTopics(Exception):
 
 class GenerationFailed(Exception):
     """Модель не вернула разборчивый ответ."""
+
+
+class TopicTaken(Exception):
+    """Тему уже забрала другая генерация (или по ней уже есть черновик)."""
 
 
 # --- бэклог ---------------------------------------------------------------
@@ -76,6 +80,35 @@ async def next_topic(session: AsyncSession, rubric: str) -> Topic:
     if topic is None:
         raise NoTopics(rubric)
     return topic
+
+
+async def claim_topic(session: AsyncSession, rubric: str, topic: Topic | None = None) -> Topic:
+    """Забирает тему в работу до вызова модели, чтобы две генерации не взяли одну и ту же.
+
+    Генерация идёт десятки секунд; без захвата /gen и плановая подготовка, запущенные
+    одновременно, получали одну тему и делали два одинаковых черновика.
+    """
+    while True:
+        candidate = topic or await next_topic(session, rubric)
+        result = await session.execute(
+            update(Topic)
+            .where(Topic.id == candidate.id, Topic.status == TopicStatus.NEW.value)
+            .values(status=TopicStatus.USED.value)
+        )
+        await session.commit()
+        if result.rowcount == 1:
+            await session.refresh(candidate)
+            return candidate
+        if topic is not None:
+            raise TopicTaken(candidate.title)
+        # тему из бэклога успели забрать — берём следующую
+
+
+async def release_topic(session: AsyncSession, topic_id: int) -> None:
+    """Возвращает тему в бэклог, если черновик по ней не получился."""
+    await session.rollback()
+    await session.execute(update(Topic).where(Topic.id == topic_id).values(status=TopicStatus.NEW.value))
+    await session.commit()
 
 
 async def backlog_counts(session: AsyncSession) -> dict[str, int]:
@@ -177,10 +210,14 @@ async def generate_draft(
 ) -> Draft:
     """Берёт следующую тему из бэклога (или переданную) и создаёт черновик на модерацию."""
     rubric = get_rubric(rubric_key)
-    topic = topic or await next_topic(session, rubric_key)
-    payload, issues = await _generate_payload(llm, settings, rubric, build_user_prompt(topic.title, topic.notes))
-    draft = Draft(rubric=rubric_key, topic_id=topic.id, payload=payload, issues=issues)
-    topic.status = TopicStatus.USED.value
+    topic = await claim_topic(session, rubric_key, topic)
+    topic_id = topic.id  # после rollback атрибуты объекта недоступны без запроса к базе
+    try:
+        payload, issues = await _generate_payload(llm, settings, rubric, build_user_prompt(topic.title, topic.notes))
+    except BaseException:
+        await release_topic(session, topic_id)
+        raise
+    draft = Draft(rubric=rubric_key, topic_id=topic_id, payload=payload, issues=issues)
     session.add(draft)
     await session.commit()
     return draft

@@ -139,6 +139,9 @@ def build_router(admin_id: int) -> Router:
             except generator.NoTopics:
                 await message.answer(f"В бэклоге рубрики закончились темы. Добавь: /add {rubric} тема")
                 return
+            except generator.TopicTaken:
+                await message.answer("По этой теме черновик уже готовится или готов. Смотри /queue.")
+                return
             except Exception as e:  # сеть, ключ, лимиты, ответ модели — автору нужна причина
                 log.exception("генерация не удалась")
                 await message.answer(f"Не получилось сгенерировать: {e}")

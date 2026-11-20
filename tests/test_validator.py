@@ -53,6 +53,9 @@ def test_length_limits():
     assert any("лимит Telegram" in e for e in levels(validate_post_html("🔹" * 2049), "error"))
     assert any("рекомендовано до" in w for w in levels(validate_post_html("я" * 300, max_len=200), "warn"))
     assert any("рекомендовано от" in w for w in levels(validate_post_html("я" * 50, min_len=200), "warn"))
+    # небольшой выход за рекомендованную длину — не повод для предупреждения
+    assert validate_post_html("я" * 2001, max_len=2000) == []
+    assert validate_post_html("я" * 1150, min_len=1200) == []
 
 
 def test_stop_phrase_is_warning_not_error():

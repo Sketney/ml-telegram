@@ -14,6 +14,8 @@ QUIZ_QUESTION_LIMIT = 300
 QUIZ_OPTION_LIMIT = 100
 QUIZ_EXPLANATION_LIMIT = 200
 QUIZ_MAX_OPTIONS = 10
+# Рекомендованная длина — ориентир: о выходе за неё на несколько символов не предупреждаем.
+LENGTH_TOLERANCE = 0.1
 
 ALLOWED_TAGS = {
     "b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
@@ -123,9 +125,9 @@ def validate_post_html(html: str, *, min_len: int = 0, max_len: int = TG_TEXT_LI
     length = utf16_len(visible)
     if length > TG_TEXT_LIMIT:
         issues.append(issue("error", f"длина {length} символов, лимит Telegram — {TG_TEXT_LIMIT}"))
-    elif length > max_len:
+    elif length > max_len * (1 + LENGTH_TOLERANCE):
         issues.append(issue("warn", f"длина {length} символов, для рубрики рекомендовано до {max_len}"))
-    elif length < min_len:
+    elif length < min_len * (1 - LENGTH_TOLERANCE):
         issues.append(issue("warn", f"длина {length} символов, для рубрики рекомендовано от {min_len}"))
 
     for ph in dict.fromkeys(_PLACEHOLDER_RE.findall(prose)):
