@@ -69,7 +69,7 @@ async def test_generate_post_takes_oldest_topic_and_adds_hashtag(database, setti
         assert draft.status == DraftStatus.PENDING.value
         assert draft.topic_id == first.id
         assert draft.payload["kind"] == "post"
-        assert draft.payload["html"].rstrip().endswith("#concept")
+        assert draft.payload["html"].rstrip().endswith("#EML_concept")
         assert not draft.has_errors
         assert (await s.get(Topic, first.id)).status == TopicStatus.USED.value
         assert (await generator.next_topic(s, "concept")).id != first.id
@@ -79,7 +79,7 @@ async def test_signature_goes_after_hashtag(database, settings, llm):
     settings.channel_signature = '<a href="https://t.me/x">Канал</a>'
     async with db.session() as s:
         draft = await generator.generate_draft(s, llm, settings, "history")
-    assert draft.payload["html"].endswith('#history\n<a href="https://t.me/x">Канал</a>')
+    assert draft.payload["html"].endswith('#EML_history\n<a href="https://t.me/x">Канал</a>')
     assert not draft.has_errors
 
 

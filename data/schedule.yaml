@@ -19,6 +19,7 @@ slots:
   - { day: wed, time: "10:00", rubrics: [tool, paper, experiment, practice] }
   - { day: thu, time: "10:00", rubric: quiz }
   - { day: fri, time: "10:00", rubrics: [cheatsheet, history] }
+  - { day: sat, time: "11:00", rubric: fact }
 
 # Раз в день бот снимает просмотры постов с публичной страницы канала (команда /stats).
 stats_at: "09:00"

@@ -1,24 +1,25 @@
 # Рубрики канала. Этап 1 — три вечнозелёные; остальные добавляются на этапах 2–3.
 # hashtag и title можно менять свободно, key — нет (на него ссылаются расписание, бэклог и промпты).
+# У хештегов общий префикс EML_ (Easy_ML): по нему рубрики канала не смешиваются с чужими постами в поиске.
 # min_len / max_len — рекомендованная длина видимого текста поста в символах.
 
 concept:
   title: Понятие недели
-  hashtag: "#concept"
+  hashtag: "#EML_concept"
   kind: post
   min_len: 1200
   max_len: 2000
 
 history:
   title: История ML
-  hashtag: "#history"
+  hashtag: "#EML_history"
   kind: post
   min_len: 1000
   max_len: 1800
 
 quiz:
   title: Квиз
-  hashtag: "#quiz"
+  hashtag: "#EML_quiz"
   kind: quiz
 
 # --- Рубрики по источникам (source: feed) -------------------------------------
@@ -27,7 +28,7 @@ quiz:
 
 paper:
   title: Разбор статьи
-  hashtag: "#paper"
+  hashtag: "#EML_paper"
   kind: post
   source: feed
   min_len: 1500
@@ -35,7 +36,7 @@ paper:
 
 release:
   title: Релиз с разбором
-  hashtag: "#release"
+  hashtag: "#EML_release"
   kind: post
   source: feed
   min_len: 1200
@@ -43,7 +44,7 @@ release:
 
 tool:
   title: Инструмент недели
-  hashtag: "#tool"
+  hashtag: "#EML_tool"
   kind: post
   source: feed
   min_len: 1500
@@ -53,17 +54,25 @@ tool:
 
 interview:
   title: Вопрос с ML-собеса
-  hashtag: "#interview"
+  hashtag: "#EML_interview"
   kind: post
   min_len: 1000
   max_len: 2000
 
 cheatsheet:           # kind: sheet — картинка-шпаргалка с короткой подписью
   title: Шпаргалка
-  hashtag: "#cheatsheet"
+  hashtag: "#EML_cheatsheet"
   kind: sheet
   min_len: 200
   max_len: 700
+
+fact:                 # grounded: у каждой темы в бэклоге должны быть проверенные факты и ссылка на источник
+  title: А знали ли вы?
+  hashtag: "#EML_didyouknow"
+  kind: post
+  grounded: true
+  min_len: 400
+  max_len: 800
 
 # --- Рубрики по заметкам автора (source: notes) -----------------------------------
 # Сырьё присылает автор: /note experiment или /note practice, затем текст, файл или голосовое.
@@ -71,7 +80,7 @@ cheatsheet:           # kind: sheet — картинка-шпаргалка с �
 
 experiment:
   title: Эксперимент
-  hashtag: "#experiment"
+  hashtag: "#EML_experiment"
   kind: post
   source: notes
   min_len: 1500
@@ -79,7 +88,7 @@ experiment:
 
 practice:
   title: История с работы
-  hashtag: "#practice"
+  hashtag: "#EML_practice"
   kind: post
   source: notes
   min_len: 1200

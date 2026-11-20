@@ -58,6 +58,16 @@ def rubric_list(source: str = "backlog") -> str:
 
 FEED_HINT = "Эта рубрика пишется по материалам из источников: выбери кандидата в /digest."
 NOTES_HINT = "Эта рубрика пишется по твоим заметкам: /note {rubric}, затем текст, файл или голосовое."
+GROUNDED_HINT = (
+    "В этой рубрике у темы должны быть проверенные факты и ссылка на источник:\n"
+    "/add {rubric} заголовок | факты своими словами: кто, когда, что произошло. https://ссылка-на-источник"
+)
+
+
+def split_facts(text: str) -> tuple[str, str]:
+    """«заголовок | факты и ссылка» → (заголовок, факты)."""
+    title, _, facts = text.partition("|")
+    return title.strip(), facts.strip()
 
 
 def other_source_hint(rubric: str) -> str | None:
@@ -124,8 +134,13 @@ def build_router(admin_id: int) -> Router:
         if hint := other_source_hint(rubric):
             await message.answer(hint)
             return
+        title, facts = split_facts(title) if load_rubrics()[rubric].grounded else (title, "")
         async with db.session() as s:
-            topic = await generator.add_topic(s, rubric, title)
+            try:
+                topic = await generator.add_topic(s, rubric, title, facts)
+            except ValueError:
+                await message.answer(GROUNDED_HINT.format(rubric=rubric))
+                return
         await message.answer("Добавил в бэклог." if topic else "Такая тема в этой рубрике уже есть.")
 
     @router.message(Command("queue"))
@@ -173,7 +188,12 @@ def build_router(admin_id: int) -> Router:
             try:
                 topic = None
                 if title:
-                    topic = await generator.add_topic(s, rubric, title)
+                    title, facts = split_facts(title) if load_rubrics()[rubric].grounded else (title, "")
+                    try:
+                        topic = await generator.add_topic(s, rubric, title, facts)
+                    except ValueError:
+                        await message.answer(GROUNDED_HINT.format(rubric=rubric))
+                        return
                     if topic is None:  # тема уже в бэклоге — берём её, если по ней ещё не писали
                         topic = await s.scalar(select(Topic).where(Topic.rubric == rubric, Topic.title == title))
                         if topic.status != TopicStatus.NEW.value:

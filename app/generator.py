@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 import yaml
@@ -25,6 +26,13 @@ SHOW_ANSWER_OPTION = "Посмотреть ответ"
 # Меньше этого — писать пост не из чего: модель начнёт додумывать факты.
 MIN_SOURCE_CHARS = 400
 MIN_NOTES_CHARS = 120
+_URL_RE = re.compile(r"https?://[^\s<>\"')]+")
+
+
+def source_link(notes: str) -> str | None:
+    """Первая ссылка в фактах темы: её пост обязан показать читателю."""
+    found = _URL_RE.search(notes or "")
+    return found.group(0).rstrip(".,;") if found else None
 
 
 class NoTopics(Exception):
@@ -57,6 +65,11 @@ async def sync_backlog(session: AsyncSession, path: Path | None = None) -> int:
         existing = set((await session.scalars(select(Topic.title).where(Topic.rubric == rubric))).all())
         for item in items or []:
             title, notes = (item, "") if isinstance(item, str) else (item["title"], item.get("notes", ""))
+            if isinstance(item, dict) and item.get("facts"):  # тема с проверенными фактами и источником
+                notes = f"{item['facts'].strip()}\nИсточник: {item.get('source', '').strip()}"
+            if known[rubric].grounded and not source_link(notes):
+                log.warning("backlog.yaml: у темы «%s» рубрики %s нет фактов со ссылкой, пропускаю", title, rubric)
+                continue
             title = title.strip()
             if title and title not in existing:
                 session.add(Topic(rubric=rubric, title=title, notes=notes))
@@ -68,7 +81,8 @@ async def sync_backlog(session: AsyncSession, path: Path | None = None) -> int:
 
 async def add_topic(session: AsyncSession, rubric: str, title: str, notes: str = "") -> Topic | None:
     """None — такая тема в этой рубрике уже есть."""
-    get_rubric(rubric)
+    if get_rubric(rubric).grounded and (len(notes.strip()) < MIN_NOTES_CHARS or not source_link(notes)):
+        raise ValueError("нужны факты и ссылка на источник")
     title = title.strip()
     dup = await session.scalar(select(Topic).where(Topic.rubric == rubric, Topic.title == title))
     if dup:
@@ -212,10 +226,19 @@ def build_user_prompt(
     previous: dict | None = None,
     source: tuple[SourceItem, str, str] | None = None,
     raw_notes: str = "",
+    facts: str = "",
 ) -> str:
     lines = [f"Тема: {topic_title}"]
     if notes:
         lines.append(f"Пожелания автора к теме: {notes}")
+    if facts:
+        lines += [
+            "",
+            "Ниже проверенные факты по теме и ссылка на источник. Пост пиши только по ним.",
+            "<facts>",
+            facts,
+            "</facts>",
+        ]
     if raw_notes:
         lines += [
             "",
@@ -306,6 +329,10 @@ async def _prompt_and_material(
                 f"заметок слишком мало (меньше {MIN_NOTES_CHARS} символов): посту не на что опереться"
             )
         return build_user_prompt(title, comment=comment, previous=previous, raw_notes=notes), notes
+    if rubric.grounded:
+        if len(notes.strip()) < MIN_NOTES_CHARS or not source_link(notes):
+            raise GenerationFailed("у темы нет проверенных фактов со ссылкой на источник: писать не по чему")
+        return build_user_prompt(title, comment=comment, previous=previous, facts=notes), notes
     source = await _source_for(session, topic_id)
     return build_user_prompt(title, notes, comment, previous, source), (source[1] if source else None)
 
@@ -315,6 +342,9 @@ async def _finish(session: AsyncSession, llm: LLM, settings: Settings, draft: Dr
     extra: list[dict] = []
     if material and draft.payload.get("kind") == "post":
         extra += await factcheck.check(llm, draft.payload["html"], material)
+        link = source_link(material) if get_rubric(draft.rubric).grounded else None
+        if link and link not in draft.payload["html"]:
+            extra.append({"level": "warn", "text": f"в посте нет ссылки на источник: {link}"})
     if draft.payload.get("kind") == "sheet" and not draft.has_errors:
         channel = settings.channel_id if settings.channel_id.startswith("@") else ""
         try:

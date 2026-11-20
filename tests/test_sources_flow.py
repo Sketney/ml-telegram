@@ -111,7 +111,7 @@ async def test_write_tool_fill_own_block_and_publish(tg, collected, llm):
     async with db.session() as s:
         draft = (await s.scalars(select(Draft))).one()
         item = (await s.scalars(select(SourceItem).where(SourceItem.rubric == "tool"))).one()
-        assert draft.has_errors and draft.rubric == "tool" and draft.payload["html"].rstrip().endswith("#tool")
+        assert draft.has_errors and draft.rubric == "tool" and draft.payload["html"].rstrip().endswith("#EML_tool")
         assert item.status == ItemStatus.USED.value and item.topic_id == draft.topic_id
 
     tg.press(ADMIN, card, tg.buttons(card)["🧩 Вписать: Мой опыт"])
@@ -215,7 +215,7 @@ async def test_slot_with_several_rubrics_publishes_oldest_approved(tg, collected
 
     await publish_slot_job(tg.bot, settings, ("tool", "paper"))
     posted = tg.sent("sendMessage", CHANNEL)
-    assert len(posted) == 1 and "#paper" in posted[0]["text"]
+    assert len(posted) == 1 and "#EML_paper" in posted[0]["text"]
     assert "Разбор статьи" in tg.sent("sendMessage", ADMIN)[-1]["text"]
     async with db.session() as s:
         statuses = dict((await s.execute(select(Draft.rubric, Draft.status))).all())

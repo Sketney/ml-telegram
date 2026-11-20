@@ -23,6 +23,8 @@ class Rubric:
     max_len: int = TG_TEXT_LIMIT
     # "backlog" — темы из бэклога; "feed" — по материалам из источников; "notes" — по заметкам автора
     source: str = "backlog"
+    # Рубрика по бэклогу, в которой пост пишется только по фактам и ссылке, приложенным к теме.
+    grounded: bool = False
 
 
 @lru_cache
@@ -44,6 +46,7 @@ def load_rubrics(path: str | None = None) -> dict[str, Rubric]:
             min_len=int(cfg.get("min_len", 0)),
             max_len=int(cfg.get("max_len", TG_TEXT_LIMIT)),
             source=source,
+            grounded=bool(cfg.get("grounded", False)),
         )
     return rubrics
 

@@ -34,7 +34,7 @@ async def test_interview_is_a_backlog_rubric(tg):
     assert "Вопрос с ML-собеса" in card["text"]
     async with db.session() as s:
         draft = (await s.scalars(select(Draft))).one()
-    assert draft.payload["html"].rstrip().endswith("#interview") and not draft.has_errors
+    assert draft.payload["html"].rstrip().endswith("#EML_interview") and not draft.has_errors
 
 
 # --- заметки автора -------------------------------------------------------------------
@@ -56,7 +56,7 @@ async def test_experiment_from_notes_in_several_messages(tg, llm):
     async with db.session() as s:
         draft = (await s.scalars(select(Draft))).one()
         topic = await s.get(Topic, draft.topic_id)
-    assert draft.rubric == "experiment" and draft.payload["html"].rstrip().endswith("#experiment")
+    assert draft.rubric == "experiment" and draft.payload["html"].rstrip().endswith("#EML_experiment")
     assert topic.notes.startswith("Проверял, влезет ли") and topic.status == TopicStatus.USED.value
     assert topic.title == "Проверял, влезет ли Qwen 7B в 8 ГБ VRAM. Стенд: RTX 3070, Ubuntu 24.04"
 
@@ -176,7 +176,7 @@ async def test_ranking_prompt_lists_topics_already_covered(database, settings, l
 
 SHEET = {
     "kind": "sheet",
-    "html": "<b>Шпаргалка: квантизации</b>\n\n" + "Зачем она нужна и когда пригодится. " * 6 + "\n\n#cheatsheet",
+    "html": "<b>Шпаргалка: квантизации</b>\n\n" + "Зачем она нужна и когда пригодится. " * 6 + "\n\n#EML_cheatsheet",
     "sheet": {
         "title": "Квантизации GGUF",
         "subtitle": "Что значат буквы в названии файла модели",
@@ -220,7 +220,7 @@ def test_sheet_html_escapes_model_text():
 async def test_cheatsheet_preview_edit_caption_and_publish(tg):
     card = await say_and_wait_card(tg, "/gen cheatsheet")
     preview = tg.sent("sendPhoto", ADMIN)[0]
-    assert preview["photo"] == FAKE_PNG and preview["parse_mode"] == "HTML" and "#cheatsheet" in preview["caption"]
+    assert preview["photo"] == FAKE_PNG and preview["parse_mode"] == "HTML" and "#EML_cheatsheet" in preview["caption"]
     assert "Шпаргалка" in card["text"]
     assert set(tg.buttons(card)) == {
         "✅ Сейчас", "🕒 В расписание", "✏️ Подпись", "🔄 Заново", "💬 С комментарием", "⏸ Отложить", "❌ Отклонить",
@@ -313,3 +313,63 @@ async def test_stats_need_public_username(database, settings):
     async with db.session() as s:
         with pytest.raises(metrics.StatsUnavailable, match="@username"):
             await metrics.refresh(s, settings)
+
+
+# --- «А знали ли вы?»: пост только по фактам со ссылкой ------------------------------------------
+
+FACTS = (
+    "Tay — чат-бот компании Microsoft, запущенный в Twitter 23 марта 2016 года. Его отключили через 16 часов "
+    "после запуска. https://en.wikipedia.org/wiki/Tay_(chatbot)"
+)
+
+
+async def test_fact_post_is_written_from_backlog_facts(tg, llm):
+    card = await say_and_wait_card(tg, "/gen fact")
+    assert "А знали ли вы?" in card["text"]
+    prompt = next(user for _, user in llm.calls if "<facts>" in user)
+    assert "обыграл профессионального игрока" in prompt and "https://en.wikipedia.org/wiki/OpenAI_Five" in prompt
+    assert "<material>" in llm.calls[-1][1]  # и сверен с теми же фактами
+    async with db.session() as s:
+        draft = (await s.scalars(select(Draft))).one()
+    assert draft.rubric == "fact" and draft.payload["html"].rstrip().endswith("#EML_didyouknow")
+    # заглушка FakeLLM ссылку не ставит — автор видит это в карточке
+    assert any(
+        "нет ссылки на источник: https://en.wikipedia.org/wiki/OpenAI_Five" in w for w in levels(draft.issues, "warn")
+    )
+    assert not draft.has_errors
+
+
+async def test_fact_topics_need_facts_and_a_link(tg, database):
+    tg.user_message(ADMIN, "/add fact Просто интересный заголовок")
+    await tg.wait_for(lambda: "должны быть проверенные факты и ссылка" in last_text(tg))
+    tg.user_message(
+        ADMIN,
+        "/add fact Заголовок | факты есть, а ссылки нет, хотя текста тут достаточно много для проверки длины, честное слово, очень много текста",
+    )
+    await tg.wait_for(
+        lambda: sum("должны быть проверенные факты" in m["text"] for m in tg.sent("sendMessage", ADMIN)) == 2
+    )
+    tg.user_message(ADMIN, f"/add fact Чат-бот прожил 16 часов | {FACTS}")
+    await tg.wait_for(lambda: last_text(tg) == "Добавил в бэклог.")
+    async with db.session() as s:
+        topic = await s.scalar(select(Topic).where(Topic.title == "Чат-бот прожил 16 часов"))
+        assert topic.rubric == "fact" and topic.notes == FACTS
+        with pytest.raises(ValueError):
+            await generator.add_topic(s, "fact", "Без фактов")
+    card = await say_and_wait_card(tg, f"/gen fact Свой факт | {FACTS}")
+    assert "Свой факт" in card["text"]
+
+
+async def test_backlog_sync_skips_fact_topics_without_source(database, tmp_path):
+    path = tmp_path / "backlog.yaml"
+    path.write_text(
+        "fact:\n  - Голый заголовок без фактов\n"
+        "  - {title: С фактами, facts: 'Кто, когда и что произошло, подробно и по делу.', source: 'https://example.com/a'}\n",
+        encoding="utf-8",
+    )
+    async with db.session() as s:
+        before = len((await s.scalars(select(Topic).where(Topic.rubric == "fact"))).all())
+        assert await generator.sync_backlog(s, path) == 1
+        topic = await s.scalar(select(Topic).where(Topic.title == "С фактами"))
+        assert topic.notes.endswith("Источник: https://example.com/a")
+        assert len((await s.scalars(select(Topic).where(Topic.rubric == "fact"))).all()) == before + 1
