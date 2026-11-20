@@ -227,9 +227,9 @@ def validate_sheet(payload: dict, *, min_len: int = 0, max_len: int = CAPTION_LI
     title = str(sheet.get("title") or "")
     if not title:
         issues.append(issue("error", "у шпаргалки нет заголовка"))
-    too_long("заголовок шпаргалки", title, 70)
-    too_long("подзаголовок шпаргалки", str(sheet.get("subtitle") or ""), 130)
-    too_long("главная мысль шпаргалки", str(sheet.get("takeaway") or ""), 170)
+    too_long("заголовок шпаргалки", title, 55)
+    too_long("подзаголовок шпаргалки", str(sheet.get("subtitle") or ""), 110)
+    too_long("главная мысль шпаргалки", str(sheet.get("takeaway") or ""), 140)
     if not 2 <= len(sections) <= SHEET_MAX_SECTIONS:
         issues.append(issue("error", f"блоков в шпаргалке {len(sections)}, нужно от 2 до {SHEET_MAX_SECTIONS}"))
     rows = 0
@@ -244,8 +244,8 @@ def validate_sheet(payload: dict, *, min_len: int = 0, max_len: int = CAPTION_LI
             if not item.get("term") or not item.get("text"):
                 issues.append(issue("error", f"в блоке {n} шпаргалки есть пустая строка"))
                 break
-            too_long("термин", item["term"], 34)
-            too_long("строка", item["text"], 95)
+            too_long("термин", item["term"], 28)
+            too_long("строка", item["text"], 75)
         rows += len(items)
     if rows > SHEET_MAX_ROWS:
         # ошибка, а не предупреждение: длинную картинку в ленте не прочитать, модель должна сократить сама
