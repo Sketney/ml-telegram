@@ -4,19 +4,19 @@
 
 concept:
   title: Понятие недели
-  hashtag: "#понятие"
+  hashtag: "#concept"
   kind: post
   min_len: 1200
   max_len: 2000
 
 history:
   title: История ML
-  hashtag: "#история"
+  hashtag: "#history"
   kind: post
   min_len: 1000
   max_len: 1800
 
 quiz:
   title: Квиз
-  hashtag: "#квиз"
+  hashtag: "#quiz"
   kind: quiz

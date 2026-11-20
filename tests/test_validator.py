@@ -9,7 +9,7 @@ GOOD = (
     "<b>Понятие недели: квантизация</b>\n\n"
     "Модель не влезает в видеокарту. Что делать?\n\n"
     '<pre><code class="language-bash">ollama run llama3:8b-q4</code></pre>\n\n'
-    "<blockquote expandable>Нюанс: качество падает.</blockquote>\n\n#понятие"
+    "<blockquote expandable>Нюанс: качество падает.</blockquote>\n\n#concept"
 )
 
 

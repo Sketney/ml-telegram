@@ -39,7 +39,7 @@ async def test_stranger_gets_no_reply(tg):
 async def test_post_approve_then_published_by_slot(tg, settings):
     card = await gen(tg, "concept")
     preview = tg.sent("sendMessage", ADMIN)[-2]
-    assert preview["parse_mode"] == "HTML" and "#понятие" in preview["text"]
+    assert preview["parse_mode"] == "HTML" and "#concept" in preview["text"]
     assert "Черновик #1" in card["text"] and "Понятие недели" in card["text"]
     buttons = tg.buttons(card)
     assert set(buttons) == {
