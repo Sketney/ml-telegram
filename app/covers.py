@@ -27,6 +27,7 @@ _FIRST_BOLD_RE = re.compile(r"<(b|strong)>(.*?)</\1>", re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
 # «Понятие недели: …», «Разбор: …» — ярлык рубрики в начале заголовка; на обложке рубрика уже подписана
 _LABEL_RE = re.compile(r"^[^:]{1,30}:\s+(?=\S)")
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+(?=[A-ZА-ЯЁ«])")
 _DID_YOU_KNOW_RE = re.compile(r"^а\s+знали\s+ли\s+вы,?\s+что\s+", re.IGNORECASE)
 
 # Настройки задаются при запуске бота. None — обложки выключены (тесты, скрипты).
@@ -53,6 +54,9 @@ def cover_text(payload: dict, brand_emoji: str = "") -> str:
         text = _LABEL_RE.sub("", text.strip(), count=1)
         if _DID_YOU_KNOW_RE.match(text):
             text = _DID_YOU_KNOW_RE.sub("", text).rstrip("?")
+        first = _SENTENCE_END_RE.split(text, maxsplit=1)[0]
+        if len(text) > COVER_TEXT_LIMIT * 0.6 and len(first) >= 12:
+            text = first  # заголовок из двух фраз: на обложку идёт первая
         text = text[:1].upper() + text[1:]
     if brand_emoji:
         text = text.replace(brand_emoji, "")

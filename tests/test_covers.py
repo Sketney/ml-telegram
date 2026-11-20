@@ -43,6 +43,8 @@ def test_cover_text_prefers_model_field_then_headline():
         == "AlexNet учили на двух GTX 580"
     )
     assert covers.cover_text({"html": "<b>🧠 Почему <i>RAG</i> &amp; поиск</b>"}, "🧠") == "Почему RAG & поиск"
+    two = "<b>Газеты 1958 года обещали думающую машину. Она умела отличать левое от правого</b>"
+    assert covers.cover_text({"html": two}) == "Газеты 1958 года обещали думающую машину"
     assert covers.cover_text({"html": "текст без заголовка"}) == ""
     long = covers.cover_text({"cover": "слово " * 30})
     assert len(long) <= covers.COVER_TEXT_LIMIT + 1 and long.endswith("…")
