@@ -16,6 +16,7 @@ slots:
   # В слоте можно перечислить несколько рубрик: выйдет самый давно одобренный черновик любой из них.
   # Так рубрики чередуются сами: неопубликованный черновик ждёт следующего слота, новый пока не готовится.
   - { day: mon, time: "10:00", rubrics: [concept, interview] }
+  - { day: tue, time: "10:00", rubric: course }   # курс «ML с нуля»: один урок в неделю
   - { day: wed, time: "10:00", rubrics: [tool, paper, experiment, practice] }
   - { day: thu, time: "10:00", rubric: quiz }
   - { day: fri, time: "10:00", rubrics: [cheatsheet, history] }
