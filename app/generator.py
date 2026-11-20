@@ -262,7 +262,8 @@ async def _generate_payload(llm: LLM, settings: Settings, rubric: Rubric, user_p
             prompt = f"{user_prompt}\n\nПрошлый ответ не удалось разобрать ({e}). Верни только JSON в заданном формате."
             continue
         issues = validate_payload(payload, min_len=rubric.min_len, max_len=rubric.max_len)
-        errors = [i["text"] for i in issues if i["level"] == "error"]
+        # пустой блок автора («Мой опыт») — ожидаемое состояние черновика, а не повод для второго вызова модели
+        errors = [i["text"] for i in issues if i["level"] == "error" and not i.get("author_block")]
         if not errors:
             break
         # повтор — это второй платный вызов модели: причина должна быть видна в логе

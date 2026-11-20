@@ -36,6 +36,10 @@ RAW_TAGS = {"code", "pre"}
 _TAG_RE = re.compile(r"</?([a-zA-Z][a-zA-Z0-9-]*)(\s[^<>]*)?>")
 _PLACEHOLDER_RE = re.compile(r"\{[^{}\n]{1,80}\}")
 
+# Блоки, которые по шаблону рубрики вписывает сам автор. Пока они пусты, публиковать нельзя,
+# но это не ошибка модели: переспрашивать её из-за них не нужно.
+AUTHOR_BLOCKS = ("{Мой опыт}", "{Моё мнение}")
+
 STOP_PHRASES = [
     "в современном мире",
     "не секрет, что",
@@ -142,7 +146,10 @@ def validate_post_html(
         issues.append(issue("warn", f"длина {length} символов, для рубрики рекомендовано от {min_len}"))
 
     for ph in dict.fromkeys(_PLACEHOLDER_RE.findall(prose)):
-        issues.append(issue("error", f"осталась заглушка {ph} — её нужно заполнить"))
+        found = issue("error", f"осталась заглушка {ph} — её нужно заполнить")
+        if ph in AUTHOR_BLOCKS:
+            found["author_block"] = True
+        issues.append(found)
 
     low = prose.lower()
     for phrase in STOP_PHRASES:

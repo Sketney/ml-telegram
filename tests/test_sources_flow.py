@@ -94,6 +94,9 @@ async def test_write_tool_fill_own_block_and_publish(tg, collected, llm):
     assert "ТЕКСТ ИСТОЧНИКА: a/tool" in prompt and "https://github.com/a/tool" in prompt and "<source>" in prompt
     assert "reply_markup" not in tg.messages[digest["message_id"]]  # кнопки использованного кандидата убраны
 
+    # пустой блок автора не считается ошибкой модели: генерация обошлась одним вызовом
+    assert sum("<source>" in user for _, user in llm.calls) == 1
+
     # блок «Мой опыт» не заполнен — публиковать нельзя ни сразу, ни в расписание
     assert "Инструмент недели" in card["text"] and "{Мой опыт}" in card["text"] and "🧩" in card["text"]
     assert set(tg.buttons(card)) == {
