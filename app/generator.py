@@ -230,6 +230,8 @@ async def _generate_payload(llm: LLM, settings: Settings, rubric: Rubric, user_p
         errors = [i["text"] for i in issues if i["level"] == "error"]
         if not errors:
             break
+        # повтор — это второй платный вызов модели: причина должна быть видна в логе
+        log.warning("рубрика %s, попытка %s: ошибки валидатора: %s", rubric.key, attempt, "; ".join(errors))
         prompt = f"{user_prompt}\n\nВ прошлой версии были ошибки, исправь их и верни ответ целиком:\n- " + "\n- ".join(
             errors
         )
