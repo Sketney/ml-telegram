@@ -55,6 +55,12 @@ STOP_PHRASES = [
 ]
 
 
+COVER_LIMIT = 60
+# Шпаргалка должна читаться в ленте без увеличения: при 9 строках картинка выходит примерно 2:3
+SHEET_MAX_SECTIONS = 3
+SHEET_MAX_ROWS = 9
+
+
 def issue(level: str, text: str) -> dict:
     return {"level": level, "text": text}
 
@@ -104,6 +110,14 @@ class _TgHtmlParser(HTMLParser):
         self.visible.append(data)
         if not any(t in RAW_TAGS for t in self.stack):
             self.prose.append(data)
+
+
+def visible_len(html: str) -> int:
+    """Длина текста без разметки — так её считает Telegram в лимитах сообщения и подписи."""
+    parser = _TgHtmlParser()
+    parser.feed(html)
+    parser.close()
+    return utf16_len("".join(parser.visible))
 
 
 def find_placeholders(html: str) -> list[str]:
@@ -216,25 +230,26 @@ def validate_sheet(payload: dict, *, min_len: int = 0, max_len: int = CAPTION_LI
     too_long("заголовок шпаргалки", title, 70)
     too_long("подзаголовок шпаргалки", str(sheet.get("subtitle") or ""), 130)
     too_long("главная мысль шпаргалки", str(sheet.get("takeaway") or ""), 170)
-    if not 2 <= len(sections) <= 6:
-        issues.append(issue("error", f"блоков в шпаргалке {len(sections)}, нужно от 2 до 6"))
+    if not 2 <= len(sections) <= SHEET_MAX_SECTIONS:
+        issues.append(issue("error", f"блоков в шпаргалке {len(sections)}, нужно от 2 до {SHEET_MAX_SECTIONS}"))
     rows = 0
     for n, section in enumerate(sections, 1):
         items = section.get("items") or []
         if not section.get("heading"):
             issues.append(issue("error", f"у блока {n} шпаргалки нет заголовка"))
         too_long(f"заголовок блока {n}", str(section.get("heading") or ""), 48)
-        if not 1 <= len(items) <= 7:
-            issues.append(issue("error", f"в блоке {n} шпаргалки строк {len(items)}, нужно от 1 до 7"))
+        if not 1 <= len(items) <= 5:
+            issues.append(issue("error", f"в блоке {n} шпаргалки строк {len(items)}, нужно от 1 до 5"))
         for item in items:
             if not item.get("term") or not item.get("text"):
                 issues.append(issue("error", f"в блоке {n} шпаргалки есть пустая строка"))
                 break
             too_long("термин", item["term"], 34)
-            too_long("строка", item["text"], 115)
+            too_long("строка", item["text"], 95)
         rows += len(items)
-    if rows > 26:
-        issues.append(issue("warn", f"в шпаргалке {rows} строк: картинка выйдет очень длинной"))
+    if rows > SHEET_MAX_ROWS:
+        # ошибка, а не предупреждение: длинную картинку в ленте не прочитать, модель должна сократить сама
+        issues.append(issue("error", f"в шпаргалке {rows} строк, нужно не больше {SHEET_MAX_ROWS}: оставь главное"))
     return issues
 
 
@@ -243,4 +258,8 @@ def validate_payload(payload: dict, *, min_len: int = 0, max_len: int = TG_TEXT_
         return validate_quiz(payload)
     if payload.get("kind") == "sheet":
         return validate_sheet(payload, min_len=min_len, max_len=max_len)
-    return validate_post_html(str(payload.get("html") or ""), min_len=min_len, max_len=max_len)
+    issues = validate_post_html(str(payload.get("html") or ""), min_len=min_len, max_len=max_len)
+    cover = str(payload.get("cover") or "")
+    if len(cover) > COVER_LIMIT:
+        issues.append(issue("warn", f"надпись для обложки длиннее {COVER_LIMIT} символов, на картинке будет мелко"))
+    return issues

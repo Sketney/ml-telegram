@@ -8,3 +8,5 @@ __pycache__
 tests
 *.sqlite3
 *.docx
+brand
+media

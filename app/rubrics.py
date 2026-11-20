@@ -25,6 +25,8 @@ class Rubric:
     source: str = "backlog"
     # Рубрика по бэклогу, в которой пост пишется только по фактам и ссылке, приложенным к теме.
     grounded: bool = False
+    # Делать ли посту обложку (только для kind: post). Выключается строкой cover: false в rubrics.yaml.
+    cover: bool = True
 
 
 @lru_cache
@@ -47,6 +49,7 @@ def load_rubrics(path: str | None = None) -> dict[str, Rubric]:
             max_len=int(cfg.get("max_len", TG_TEXT_LIMIT)),
             source=source,
             grounded=bool(cfg.get("grounded", False)),
+            cover=kind == "post" and bool(cfg.get("cover", True)),
         )
     return rubrics
 

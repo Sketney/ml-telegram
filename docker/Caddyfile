@@ -1,0 +1,21 @@
+# Раздаёт обложки постов и больше ничего. Адрес берётся из MEDIA_HOST, сертификат Caddy получает сам.
+# Отдаются только файлы с именем-хешем, которые положил бот: списка папки и других путей нет.
+{
+	admin off
+}
+
+{$MEDIA_HOST} {
+	@cover path_regexp ^/m/[0-9a-f]{20}\.jpg$
+	handle @cover {
+		uri strip_prefix /m
+		root * /srv/media
+		# имя файла — хеш содержимого обложки, поэтому по одному адресу картинка не меняется никогда
+		header Cache-Control "public, max-age=31536000, immutable"
+		header X-Content-Type-Options "nosniff"
+		file_server
+	}
+	handle {
+		respond 404
+	}
+	log
+}

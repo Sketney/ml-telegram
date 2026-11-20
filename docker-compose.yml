@@ -28,8 +28,31 @@ services:
       # Промпты, бэклог и расписание правятся без пересборки образа: поменял файл → docker compose restart bot
       - ./prompts:/srv/prompts:ro
       - ./data:/srv/data:ro
+      # Персонаж канала для обложек и шпаргалок (brand/mascot.png). Папки нет — картинки будут без него.
+      - ./brand:/srv/brand:ro
       - whisper:/srv/whisper
+      - media:/srv/media
+
+  # Раздаёт обложки постов по HTTPS: длинному посту Telegram подтягивает картинку сам, по её адресу.
+  # Включается профилем: COMPOSE_PROFILES=web в .env. Нужны открытые порты 80 и 443 и MEDIA_HOST.
+  web:
+    profiles: [web]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      MEDIA_HOST: ${MEDIA_HOST:-localhost}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - media:/srv/media:ro
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
   pgdata:
   whisper:
+  media:
+  caddy_data:
+  caddy_config:

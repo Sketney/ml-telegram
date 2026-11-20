@@ -10,7 +10,7 @@ from aiogram.client.telegram import TelegramAPIServer
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
-from app import db, generator, moderation
+from app import covers, db, generator, moderation
 from app.bot.handlers import build_router
 from app.config import Settings, get_settings
 from app.llm import LLM, make_llm
@@ -62,6 +62,9 @@ async def run() -> None:
     schedule = load_schedule(settings.schedule_file)
     sources_cfg = load_sources_config(settings.sources_file)
     moderation.set_slotted_rubrics(set(schedule.rubrics))
+    covers.configure(settings)
+    if not settings.media_base_url:
+        log.warning("MEDIA_BASE_URL не задан: обложку получат только короткие посты (фото с подписью)")
     db.init_engine(settings.database_url)
     await db.create_schema()
     async with db.session() as s:

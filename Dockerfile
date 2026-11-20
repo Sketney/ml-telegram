@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /srv
 
-# ffmpeg — декодирование голосовых; шрифты — кириллица и эмодзи на картинках-шпаргалках
+# ffmpeg — декодирование голосовых; шрифты — кириллица и эмодзи на шпаргалках и обложках
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg fonts-inter fonts-dejavu-core fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
@@ -22,7 +22,8 @@ COPY prompts ./prompts
 COPY data ./data
 
 # /srv/whisper — кэш модели распознавания речи (том), скачивается при первом голосовом
-RUN useradd --create-home --uid 1000 bot && mkdir -p /srv/whisper && chown bot:bot /srv/whisper
+# /srv/media — обложки постов (том): пишет бот, читает веб-сервер
+RUN useradd --create-home --uid 1000 bot && mkdir -p /srv/whisper /srv/media && chown bot:bot /srv/whisper /srv/media
 USER bot
 
 CMD ["python", "-m", "app.main"]

@@ -6,6 +6,7 @@ from aiogram import Bot
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import covers
 from app.config import Settings
 from app.models import Draft, DraftImage, DraftStatus, Topic, TopicStatus, utcnow
 from app.publisher import NoImage, send_draft
@@ -73,7 +74,9 @@ async def draft_image(session: AsyncSession, draft: Draft) -> bytes | None:
 async def publish(session: AsyncSession, bot: Bot, settings: Settings, draft: Draft) -> Draft:
     _ensure_publishable(draft)
     try:
-        msg = await send_draft(bot, channel_chat_id(settings), draft, await draft_image(session, draft))
+        msg = await send_draft(
+            bot, channel_chat_id(settings), draft, await draft_image(session, draft), await covers.for_draft(draft)
+        )
     except NoImage as e:
         raise NotAllowed(str(e)) from e
     draft.status = DraftStatus.PUBLISHED.value

@@ -32,13 +32,22 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./mlbot.sqlite3"
 
     timezone: str = "Asia/Tbilisi"
-    brand_emoji: str = "🔹"
+    brand_emoji: str = "🧠"
     channel_signature: str = ""
+    # Девиз под названием канала на обложках постов. Пусто — без девиза.
+    channel_tagline: str = ""
     quiz_show_answer_option: bool = True
 
     # Расшифровка голосовых: модель faster-whisper (tiny, base, small, medium). Пусто — выключено.
     whisper_model: str = "small"
     whisper_dir: str = str(ROOT / "whisper")
+
+    # Обложки постов. MEDIA_DIR — куда бот кладёт картинки; MEDIA_BASE_URL — адрес, по которому эту папку
+    # раздаёт веб-сервер (https://хост/m). Без адреса обложку получают только короткие посты (фото с подписью).
+    media_dir: str = str(ROOT / "media")
+    media_base_url: str = ""
+    # Папка с персонажем канала (mascot.png) для обложек и шпаргалок. Файла нет — картинки без персонажа.
+    brand_dir: str = str(ROOT / "brand")
 
     schedule_file: str = str(DATA_DIR / "schedule.yaml")
     sources_file: str = str(DATA_DIR / "sources.yaml")

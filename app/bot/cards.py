@@ -9,7 +9,7 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import moderation
+from app import covers, moderation
 from app.models import Draft, DraftStatus, Topic
 from app.publisher import send_preview
 from app.rubrics import get_rubric
@@ -87,7 +87,7 @@ async def card_text(session: AsyncSession, draft: Draft, note: str = "") -> str:
 
 async def send_card(bot: Bot, chat_id: int, session: AsyncSession, draft: Draft, note: str = "") -> Message:
     """Превью (как в канале) и следом сообщение с кнопками."""
-    await send_preview(bot, chat_id, draft, await moderation.draft_image(session, draft))
+    await send_preview(bot, chat_id, draft, await moderation.draft_image(session, draft), await covers.for_draft(draft))
     return await bot.send_message(
         chat_id=chat_id,
         text=await card_text(session, draft, note),

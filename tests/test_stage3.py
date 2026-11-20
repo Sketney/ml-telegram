@@ -196,7 +196,10 @@ def test_validate_sheet():
     long_caption = {**SHEET, "html": "я" * 1025}
     assert any("лимит Telegram — 1024" in e for e in levels(validate_sheet(long_caption), "error"))
     one_block = {**SHEET, "sheet": {**SHEET["sheet"], "sections": SHEET["sheet"]["sections"][:1]}}
-    assert any("нужно от 2 до 6" in e for e in levels(validate_sheet(one_block), "error"))
+    assert any("нужно от 2 до 3" in e for e in levels(validate_sheet(one_block), "error"))
+    row = {"term": "x", "text": "y"}
+    tall = {**SHEET, "sheet": {**SHEET["sheet"], "sections": [{"heading": h, "items": [row] * 4} for h in "ABC"]}}
+    assert any("нужно не больше 9" in e for e in levels(validate_sheet(tall), "error"))  # длинная картинка нечитаема
     no_title = {**SHEET, "sheet": {**SHEET["sheet"], "title": ""}}
     assert any("нет заголовка" in e for e in levels(validate_sheet(no_title), "error"))
     empty_row = {**SHEET, "sheet": {**SHEET["sheet"], "sections": [

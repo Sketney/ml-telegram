@@ -5,7 +5,7 @@ import contextlib
 
 import pytest
 
-from app import db, generator, moderation, render
+from app import covers, db, generator, moderation, render
 from app import transcribe as stt
 from app.config import Settings
 from app.llm import FakeLLM
@@ -16,6 +16,7 @@ from tests.mock_telegram import MockTelegram
 
 ADMIN = 4242
 FAKE_PNG = b"\x89PNG\r\n\x1a\n-fake-cheatsheet"
+FAKE_COVER = b"\xff\xd8\xff-fake-cover"
 CHANNEL = "@test_channel"
 
 
@@ -46,6 +47,9 @@ def no_network(monkeypatch):
     async def fake_render(sheet, **kwargs):
         return FAKE_PNG
 
+    async def fake_cover(title, **kwargs):
+        return FAKE_COVER + title.encode()
+
     async def fake_transcribe(data, settings):
         return "Расшифровка голосового: " + "пришли разработчики и сказали, что балансировка не работает. " * 3
 
@@ -53,10 +57,14 @@ def no_network(monkeypatch):
     monkeypatch.setattr(sources_service, "collect", fake_collect)
     render.__dict__.setdefault("render_sheet_real", render.render_sheet)
     monkeypatch.setattr(render, "render_sheet", fake_render)
+    render.__dict__.setdefault("render_cover_real", render.render_cover)
+    monkeypatch.setattr(render, "render_cover", fake_cover)
     monkeypatch.setattr(stt, "transcribe", fake_transcribe)
     moderation.set_slotted_rubrics(None)
+    covers.configure(None)  # обложки включает только тест, который их проверяет
     yield
     moderation.set_slotted_rubrics(None)
+    covers.configure(None)
 
 
 @pytest.fixture

@@ -25,3 +25,7 @@ Thumbs.db
 
 # office docs dropped into the folder (not part of the code)
 *.docx
+
+# картинки: персонаж канала и собранные обложки
+brand/
+media/

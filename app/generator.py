@@ -216,7 +216,11 @@ def build_payload(data: dict, rubric: Rubric, settings: Settings) -> dict:
     body = data.get("html")
     if not isinstance(body, str) or not body.strip():
         raise GenerationFailed("в ответе модели нет поля html")
-    return {"kind": "post", "html": compose_post_html(body, rubric, settings)}
+    payload = {"kind": "post", "html": compose_post_html(body, rubric, settings)}
+    cover = data.get("cover")
+    if isinstance(cover, str) and cover.strip():
+        payload["cover"] = " ".join(cover.split())[:120]  # надпись для обложки поста
+    return payload
 
 
 def build_user_prompt(
@@ -400,7 +404,12 @@ async def _finish(
     if draft.payload.get("kind") == "sheet" and not draft.has_errors:
         channel = settings.channel_id if settings.channel_id.startswith("@") else ""
         try:
-            png = await render.render_sheet(draft.payload["sheet"], brand_emoji=settings.brand_emoji, channel=channel)
+            png = await render.render_sheet(
+                draft.payload["sheet"],
+                brand_emoji=settings.brand_emoji,
+                channel=channel,
+                brand_dir=settings.brand_dir,
+            )
         except render.RenderUnavailable as e:
             extra.append({"level": "error", "text": f"картинка не собрана: {e}"})
         else:

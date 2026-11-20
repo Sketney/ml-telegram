@@ -119,7 +119,8 @@ class FakeLLM:
                     "Поставь LLM_PROVIDER=anthropic или openai в .env, чтобы получать настоящие черновики.\n\n"
                     f"{own_block}"
                     "<blockquote expandable>Здесь будет блок с нюансами.</blockquote>"
-                )
+                ),
+                "cover": f"Обложка: {topic}"[:45],
             },
             ensure_ascii=False,
         )
