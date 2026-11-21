@@ -12,7 +12,7 @@ import yaml
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import course, factcheck, render
+from app import course, factcheck, render, rich
 from app.config import DATA_DIR, Settings
 from app.jsonutil import extract_json_object
 from app.llm import LLM
@@ -219,6 +219,21 @@ def compose_post_html(body: str, rubric: Rubric, settings: Settings, nav: str = 
 
 
 def build_payload(data: dict, rubric: Rubric, settings: Settings, nav: str = "") -> dict:
+    if rubric.kind == "rich":
+        blocks = rich.normalize(data.get("blocks"), settings.brand_emoji)
+        if not blocks:
+            raise GenerationFailed("в ответе модели нет блоков поста (поле blocks)")
+        signature = settings.channel_signature.strip()
+        payload = {
+            "kind": "rich",
+            "title": " ".join(str(data.get("title") or "").split()),
+            "blocks": blocks,
+            "nav": nav,  # для урока курса — ссылка на предыдущий урок, уходит в подвал поста
+            "signature": signature,
+            "tail": "\n".join(x for x in (nav, rubric.hashtag, signature) if x),
+        }
+        payload["html"] = rich.to_html(payload)
+        return payload
     if rubric.kind == "quiz":
         options = data.get("options")
         if isinstance(options, list):
@@ -503,6 +518,9 @@ def _series_finish(rubric: Rubric, payload: dict, issues: list[dict], title: str
     if not rubric.series:
         return issues
     payload["cover"] = title
+    if payload.get("kind") == "rich":  # заголовок урока задаёт программа, а не модель
+        payload["title"] = title
+        payload["html"] = rich.to_html(payload)
     return [*issues, {"level": "warn", "text": nav_note}] if nav_note else issues
 
 
@@ -540,6 +558,8 @@ async def regenerate_draft(
     previous = None
     if comment:
         previous = {k: v for k, v in draft.payload.items() if k != "kind"}
+        if draft.payload.get("kind") == "rich":  # модели нужны только её блоки, без служебных полей
+            previous = {"blocks": draft.payload.get("blocks")}
         if isinstance(previous.get("options"), list):  # служебный вариант модели не показываем
             previous["options"] = [o for o in previous["options"] if o != SHOW_ANSWER_OPTION]
     prompt, material = await _prompt_and_material(session, rubric, draft.topic_id, title, notes, comment, previous)

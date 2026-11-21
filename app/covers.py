@@ -87,7 +87,7 @@ async def for_draft(draft: Draft) -> Cover | None:
     Обложка — украшение: её отсутствие публикацию не блокирует.
     """
     settings = _settings
-    if settings is None or draft.payload.get("kind") != "post":
+    if settings is None or draft.payload.get("kind") not in ("post", "rich"):
         return None
     rubric = get_rubric(draft.rubric)
     if not rubric.cover:

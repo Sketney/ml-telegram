@@ -18,7 +18,7 @@ class Rubric:
     key: str
     title: str
     hashtag: str
-    kind: str  # "post" | "quiz" | "sheet" (картинка-шпаргалка с подписью)
+    kind: str  # "post" | "quiz" | "sheet" (картинка-шпаргалка с подписью) | "rich" (развёрнутый пост из блоков)
     min_len: int = 0
     max_len: int = TG_TEXT_LIMIT
     # "backlog" — темы из бэклога; "feed" — по материалам из источников; "notes" — по заметкам автора
@@ -42,7 +42,7 @@ def load_rubrics(path: str | None = None) -> dict[str, Rubric]:
     rubrics = {}
     for key, cfg in raw.items():
         kind = cfg.get("kind", "post")
-        if kind not in ("post", "quiz", "sheet"):
+        if kind not in ("post", "quiz", "sheet", "rich"):
             raise ValueError(f"rubrics.yaml: у {key} неизвестный kind={kind}")
         source = cfg.get("source", "backlog")
         if source not in ("backlog", "feed", "notes", "lesson"):
@@ -56,7 +56,7 @@ def load_rubrics(path: str | None = None) -> dict[str, Rubric]:
             max_len=int(cfg.get("max_len", TG_TEXT_LIMIT)),
             source=source,
             grounded=bool(cfg.get("grounded", False)),
-            cover=kind == "post" and bool(cfg.get("cover", True)),
+            cover=kind in ("post", "rich") and bool(cfg.get("cover", True)),
             author_block=str(cfg.get("author_block") or "").strip(),
             series=bool(cfg.get("series", False)),
             follows=str(cfg.get("follows") or "").strip(),

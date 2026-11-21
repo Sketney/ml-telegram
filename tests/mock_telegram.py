@@ -143,7 +143,14 @@ class MockTelegram:
         for key, value in list(params.items()):
             if isinstance(value, web.FileField):  # загруженный файл: запоминаем содержимое
                 params[key] = value.file.read()
-        for key in ("reply_markup", "options", "link_preview_options", "correct_option_ids", "commands"):
+        for key in (
+            "reply_markup",
+            "options",
+            "link_preview_options",
+            "correct_option_ids",
+            "commands",
+            "rich_message",
+        ):
             if isinstance(params.get(key), str):
                 params[key] = json.loads(params[key])
 
@@ -176,6 +183,8 @@ class MockTelegram:
                 params["photo"] = params.pop(ref.removeprefix("attach://"))
             photo = [{"file_id": "ph", "file_unique_id": "ph", "width": 2160, "height": 2400}]
             return self._ok(self._store(params, photo=photo, caption=params.get("caption", "")))
+        if method == "sendRichMessage":
+            return self._ok(self._store(params, text=_rich_text(params["rich_message"])))
         if method == "sendPoll":
             poll = {
                 "id": "p1",
@@ -234,3 +243,20 @@ class MockTelegram:
     @staticmethod
     def _ok(result: Any) -> web.Response:
         return web.json_response({"ok": True, "result": result})
+
+
+def _rich_text(node: Any) -> str:
+    """Весь текст развёрнутого сообщения одной строкой — чтобы тесты могли искать в нём слова и ссылки."""
+    if isinstance(node, str):
+        return node
+    if isinstance(node, list):
+        return " ".join(filter(None, (_rich_text(x) for x in node)))
+    if isinstance(node, dict):
+        keys = ("text", "summary", "blocks", "items", "cells", "url", "caption")
+        head = (
+            f"[{node['type']}]"
+            if isinstance(node.get("type"), str) and "blocks" not in node and "text" not in node
+            else ""
+        )
+        return " ".join(filter(None, [head, *(_rich_text(node[k]) for k in keys if k in node)]))
+    return ""

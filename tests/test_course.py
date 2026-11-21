@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from sqlalchemy import select
 
-from app import course, db, generator, moderation
+from app import course, db, generator, moderation, rich
 from app.models import Draft, DraftStatus, KeyValue, Topic, TopicStatus
 from app.rubrics import build_system_prompt
 from app.scheduler import Schedule, Slot, prepare_job, publish_slot_job
+from app.validator import validate_payload
 from tests.conftest import ADMIN, CHANNEL
 from tests.test_sources_flow import last_text, say_and_wait_card
 
@@ -87,7 +90,13 @@ async def test_lessons_go_in_order_with_link_to_previous_and_toc(tg, llm):
 
     tg.press(ADMIN, card, tg.buttons(card)["✅ Сейчас"])
     await tg.wait_for(lambda: tg.sent("pinChatMessage"))
-    toc = tg.sent("sendMessage", CHANNEL)[1]  # первым ушёл сам урок, вторым — оглавление
+    (lesson_post,) = tg.sent("sendRichMessage", CHANNEL)  # урок выходит развёрнутым постом
+    types = [b["type"] for b in lesson_post["rich_message"]["blocks"]]
+    assert types[0] == "heading" and types[-1] == "footer"  # обложек в тесте нет — пост начинается с заголовка
+    assert {"paragraph", "table", "list", "details", "expandable_blockquote"} <= set(types)
+    assert lesson_post["rich_message"]["blocks"][0]["text"] == LESSON_1
+    assert "EML_course" in json.dumps(lesson_post["rich_message"]["blocks"][-1])
+    (toc,) = tg.sent("sendMessage", CHANNEL)  # обычным сообщением в канал уходит только оглавление
     async with db.session() as s:
         lesson_id = (await s.get(Draft, first.id)).channel_message_id
         toc_id = (await s.get(KeyValue, "toc:course")).value
@@ -106,8 +115,12 @@ async def test_lessons_go_in_order_with_link_to_previous_and_toc(tg, llm):
         second = (await s.scalars(select(Draft).where(Draft.rubric == "course").order_by(Draft.id.desc()))).first()
     assert f'Предыдущий урок: <a href="{lesson_url}">{LESSON_1}</a>\n#EML_course' in second.payload["html"]
 
+    assert "✏️ Править" not in tg.buttons(second_card)  # развёрнутый пост правится через комментарий
+
     tg.press(ADMIN, second_card, tg.buttons(second_card)["✅ Сейчас"])
     await tg.wait_for(lambda: tg.sent("editMessageText", CHANNEL))
+    footer = tg.sent("sendRichMessage", CHANNEL)[-1]["rich_message"]["blocks"][-1]
+    assert lesson_url in json.dumps(footer) and LESSON_1 in json.dumps(footer, ensure_ascii=False)
     edited = tg.sent("editMessageText", CHANNEL)[-1]
     assert edited["message_id"] == toc_id and "2. <a href=" in edited["text"]
     assert len(tg.sent("pinChatMessage")) == 1  # оглавление одно: оно правится, а не публикуется заново
@@ -238,3 +251,63 @@ async def test_rejected_quiz_is_not_made_again_and_cannot_be_requested(tg, llm, 
 
     tg.user_message(ADMIN, "/gen course_quiz")
     await tg.wait_for(lambda: "готовится сам" in last_text(tg))
+
+
+# --- развёрнутый пост из блоков ---------------------------------------------------------------
+
+
+def rich_payload(blocks: list[dict]) -> dict:
+    payload = {
+        "kind": "rich",
+        "title": "Урок 9. Тест",
+        "blocks": rich.normalize(blocks, "🧠"),
+        "nav": "",
+        "tail": "#EML_course",
+    }
+    payload["html"] = rich.to_html(payload)
+    return payload
+
+
+BASE = [
+    {"type": "text", "text": 'Вступление с <b>термином</b> и <a href="https://t.me/x/1">ссылкой</a>.'},
+    {"type": "heading", "text": "Раздел <b>первый</b>"},
+    {"type": "text", "text": "Объяснение."},
+    {"type": "list", "ordered": True, "items": ["шаг один", "шаг два"]},
+    {"type": "check", "question": "Что будет?", "answer": "Ничего."},
+    {"type": "marquee", "text": "такого блока нет"},
+    {"type": "text", "text": "   "},
+]
+
+
+def test_blocks_are_normalized_and_rendered_both_ways():
+    payload = rich_payload([*BASE, {"type": "heading", "text": "{E} Что запомнить"}])
+    assert [b["type"] for b in payload["blocks"]] == ["text", "heading", "text", "list", "check", "heading"]
+    assert payload["blocks"][1]["text"] == "Раздел первый" and payload["blocks"][-1]["text"] == "🧠 Что запомнить"
+    assert payload["html"].startswith("<b>Урок 9. Тест</b>") and "1. шаг один\n2. шаг два" in payload["html"]
+    assert "<tg-spoiler>Ничего.</tg-spoiler>" in payload["html"] and payload["html"].endswith("#EML_course")
+    assert validate_payload(payload) == []
+
+    message = rich.to_telegram(payload, cover=b"jpeg-bytes", hashtag="#EML_course").model_dump(exclude_none=True)
+    kinds = [b["type"] for b in message["blocks"]]
+    assert kinds[0] == "photo" and kinds.count("heading") == 2  # с обложкой заголовок урока текстом не дублируется
+    assert kinds[-3:] == ["details", "heading", "footer"] and message["blocks"][-3]["summary"] == "Ответ"
+    first = message["blocks"][1]["text"]
+    assert first[1]["type"] == "bold" and first[3] == {"type": "url", "text": "ссылкой", "url": "https://t.me/x/1"}
+
+    plain = rich.to_telegram(payload, hashtag="#EML_course").model_dump(exclude_none=True)
+    assert plain["blocks"][0] == {"type": "heading", "text": "Урок 9. Тест", "size": 2}
+
+
+def test_tables_must_fit_a_phone_screen():
+    def errors(table: dict) -> list[str]:
+        return [i["text"] for i in validate_payload(rich_payload([*BASE, table])) if i["level"] == "error"]
+
+    assert (
+        errors({"type": "table", "header": ["", "A", "B"], "rows": [["Правила", "пишет человек", "из примеров"]]}) == []
+    )
+    assert any("столбцов 4" in e for e in errors({"type": "table", "rows": [["a", "b", "c", "d"]]}))
+    assert any("ячейка слишком длинная" in e for e in errors({"type": "table", "rows": [["термин", "я" * 60]]}))
+    assert any("разное число ячеек" in e for e in errors({"type": "table", "rows": [["a", "b"], ["c"]]}))
+    assert any("строк 7" in e for e in errors({"type": "table", "rows": [["a", "b"]] * 7}))
+    too_few = {"kind": "rich", "blocks": rich.normalize(BASE[:2]), "html": "x"}
+    assert any("не развёрнутый пост" in i["text"] for i in validate_payload(too_few))

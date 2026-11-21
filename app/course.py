@@ -25,7 +25,7 @@ TITLE_LIMIT = 50
 _NUMBER_RE = re.compile(r"^Урок (\d+)\. ")
 QUIZ_PREFIX = "Проверь себя: "
 _TAG_RE = re.compile(r"<[^>]+>")
-LESSON_TEXT_LIMIT = 4000
+LESSON_TEXT_LIMIT = 7000
 
 
 @dataclass(frozen=True)

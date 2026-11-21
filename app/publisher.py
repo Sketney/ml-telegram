@@ -6,8 +6,10 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import BufferedInputFile, InputPollOption, LinkPreviewOptions, Message
 
+from app import rich
 from app.covers import Cover
 from app.models import Draft
+from app.rubrics import get_rubric
 from app.validator import CAPTION_LIMIT, visible_len
 
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
@@ -35,6 +37,10 @@ async def send_draft(
             caption=p["html"],
             parse_mode="HTML",
         )
+    if p["kind"] == "rich":
+        # развёрнутый пост: обложка стоит внутри сообщения, предпросмотр ссылки не нужен
+        message = rich.to_telegram(p, cover=cover.image if cover else None, hashtag=get_rubric(draft.rubric).hashtag)
+        return await bot.send_rich_message(chat_id=chat_id, rich_message=message)
     if p["kind"] == "quiz":
         return await bot.send_poll(
             chat_id=chat_id,

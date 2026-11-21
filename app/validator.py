@@ -290,6 +290,10 @@ def validate_payload(payload: dict, *, min_len: int = 0, max_len: int = TG_TEXT_
         return validate_quiz(payload)
     if payload.get("kind") == "sheet":
         return validate_sheet(payload, min_len=min_len, max_len=max_len)
+    if payload.get("kind") == "rich":
+        from app import rich  # импорт здесь: rich сам пользуется проверками из этого модуля
+
+        return rich.validate(payload, min_len=min_len, max_len=max_len)
     issues = validate_post_html(str(payload.get("html") or ""), min_len=min_len, max_len=max_len)
     cover = str(payload.get("cover") or "")
     if len(cover) > COVER_LIMIT:

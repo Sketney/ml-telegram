@@ -76,6 +76,26 @@ class FakeLLM:
             )
         if '"unsupported"' in system:  # запрос на фактчек
             return json.dumps({"unsupported": []})
+        if '"blocks"' in system:  # развёрнутый пост из блоков (урок курса)
+            return json.dumps(
+                {
+                    "blocks": [
+                        {"type": "text", "text": f"[заглушка] Вступление к теме «{escape(topic)}» с <b>термином</b>."},
+                        {"type": "heading", "text": "Первый раздел"},
+                        {"type": "text", "text": "Объяснение. " * 6},
+                        {
+                            "type": "table",
+                            "header": ["", "A", "B"],
+                            "rows": [["Правила", "пишет человек", "из примеров"]],
+                        },
+                        {"type": "heading", "text": "{E} Что запомнить"},
+                        {"type": "list", "ordered": False, "items": ["первый пункт", "второй пункт"]},
+                        {"type": "check", "question": "Что будет, если данные другие?", "answer": "Качество упадёт."},
+                        {"type": "quote", "text": "Оговорка заглушки FakeLLM."},
+                    ]
+                },
+                ensure_ascii=False,
+            )
         if '"sections"' in system:  # шпаргалка
             return json.dumps(
                 {
