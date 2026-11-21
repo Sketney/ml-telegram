@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 from sqlalchemy import func, select, update
@@ -26,6 +27,9 @@ SHOW_ANSWER_OPTION = "Посмотреть ответ"
 # Меньше этого — писать пост не из чего: модель начнёт додумывать факты.
 MIN_SOURCE_CHARS = 400
 MIN_NOTES_CHARS = 120
+# Пересказы без редакции и первоисточника. Для рубрик с проверенными фактами такая ссылка не годится:
+# читателю нужен источник, которому можно верить, а не страница, которую завтра перепишут.
+WEAK_SOURCE_HOSTS = ("wikipedia.org", "wikiwand.com", "wikimedia.org", "wikidata.org")
 _URL_RE = re.compile(r"https?://[^\s<>\"')]+")
 
 
@@ -47,6 +51,10 @@ class SeriesTopic(Exception):
     """Уроки курса идут по программе: свою тему в такую рубрику добавить нельзя."""
 
 
+class WeakSource(ValueError):
+    """Источник темы — Википедия или её копия: нужен первоисточник или издание с редакцией."""
+
+
 class TopicTaken(Exception):
     """Тему уже забрала другая генерация (или по ней уже есть черновик)."""
 
@@ -54,8 +62,17 @@ class TopicTaken(Exception):
 # --- бэклог ---------------------------------------------------------------
 
 
+def weak_source(notes: str) -> bool:
+    """Ссылка на источник ведёт на Википедию или её копию."""
+    host = urlparse(source_link(notes) or "").hostname or ""
+    return any(host == weak or host.endswith("." + weak) for weak in WEAK_SOURCE_HOSTS)
+
+
 async def sync_backlog(session: AsyncSession, path: Path | None = None) -> int:
-    """Добавляет в базу темы из backlog.yaml, которых там ещё нет. Возвращает число новых."""
+    """Добавляет в базу темы из backlog.yaml, которых там ещё нет. Возвращает число новых.
+
+    У тем с фактами (facts) файл главнее базы: поправленные факты или ссылка обновляются и у уже известной темы.
+    """
     path = path or DATA_DIR / "backlog.yaml"
     if not path.exists():
         return 0
@@ -66,19 +83,29 @@ async def sync_backlog(session: AsyncSession, path: Path | None = None) -> int:
         if rubric not in known:
             log.warning("backlog.yaml: рубрика %s не описана в rubrics.yaml, пропускаю", rubric)
             continue
-        existing = set((await session.scalars(select(Topic.title).where(Topic.rubric == rubric))).all())
+        topics = (await session.scalars(select(Topic).where(Topic.rubric == rubric))).all()
+        existing = {t.title: t for t in topics}
         for item in items or []:
             title, notes = (item, "") if isinstance(item, str) else (item["title"], item.get("notes", ""))
-            if isinstance(item, dict) and item.get("facts"):  # тема с проверенными фактами и источником
+            with_facts = isinstance(item, dict) and bool(item.get("facts"))
+            if with_facts:  # тема с проверенными фактами и источником
                 notes = f"{item['facts'].strip()}\nИсточник: {item.get('source', '').strip()}"
+                if item.get("source_name"):
+                    notes += f"\nНазвание источника: {str(item['source_name']).strip()}"
             if known[rubric].grounded and not source_link(notes):
                 log.warning("backlog.yaml: у темы «%s» рубрики %s нет фактов со ссылкой, пропускаю", title, rubric)
                 continue
+            if known[rubric].grounded and weak_source(notes):
+                log.warning("backlog.yaml: у темы «%s» рубрики %s источник — Википедия, пропускаю", title, rubric)
+                continue
             title = title.strip()
             if title and title not in existing:
-                session.add(Topic(rubric=rubric, title=title, notes=notes))
-                existing.add(title)
+                topic = Topic(rubric=rubric, title=title, notes=notes)
+                session.add(topic)
+                existing[title] = topic
                 added += 1
+            elif title and with_facts and existing[title].notes != notes:
+                existing[title].notes = notes
     await session.commit()
     for key, rubric in known.items():
         if rubric.series:  # уроки курса берутся из программы, а не из backlog.yaml
@@ -92,6 +119,8 @@ async def add_topic(session: AsyncSession, rubric: str, title: str, notes: str =
         raise SeriesTopic(rubric)
     if get_rubric(rubric).grounded and (len(notes.strip()) < MIN_NOTES_CHARS or not source_link(notes)):
         raise ValueError("нужны факты и ссылка на источник")
+    if get_rubric(rubric).grounded and weak_source(notes):
+        raise WeakSource(source_link(notes))
     title = title.strip()
     dup = await session.scalar(select(Topic).where(Topic.rubric == rubric, Topic.title == title))
     if dup:
@@ -363,6 +392,8 @@ async def _prompt_and_material(
     if rubric.grounded:
         if len(notes.strip()) < MIN_NOTES_CHARS or not source_link(notes):
             raise GenerationFailed("у темы нет проверенных фактов со ссылкой на источник: писать не по чему")
+        if weak_source(notes):
+            raise GenerationFailed("источник темы — Википедия: нужен первоисточник или издание с редакцией")
         return build_user_prompt(title, comment=comment, previous=previous, facts=notes), notes
     source = await _source_for(session, topic_id)
     return build_user_prompt(title, notes, comment, previous, source), (source[1] if source else None)

@@ -64,6 +64,11 @@ GROUNDED_HINT = (
 )
 
 
+WEAK_SOURCE_HINT = (
+    "Википедия как источник не принимается. Дай ссылку на первоисточник или издание с редакцией: статью самих "
+    "авторов, блог компании или лаборатории, музей, научный журнал, профильное издание. "
+    "И оставь в фактах только то, что есть на этой странице."
+)
 SERIES_HINT = (
     "Уроки курса идут по программе из data/course.yaml, свою тему сюда добавить нельзя.\n"
     "/gen {rubric} — черновик следующего урока."
@@ -147,6 +152,9 @@ def build_router(admin_id: int) -> Router:
             except generator.SeriesTopic:
                 await message.answer(SERIES_HINT.format(rubric=rubric))
                 return
+            except generator.WeakSource:
+                await message.answer(WEAK_SOURCE_HINT)
+                return
             except ValueError:
                 await message.answer(GROUNDED_HINT.format(rubric=rubric))
                 return
@@ -202,6 +210,9 @@ def build_router(admin_id: int) -> Router:
                         topic = await generator.add_topic(s, rubric, title, facts)
                     except generator.SeriesTopic:
                         await message.answer(SERIES_HINT.format(rubric=rubric))
+                        return
+                    except generator.WeakSource:
+                        await message.answer(WEAK_SOURCE_HINT)
                         return
                     except ValueError:
                         await message.answer(GROUNDED_HINT.format(rubric=rubric))

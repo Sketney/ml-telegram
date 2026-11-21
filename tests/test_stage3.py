@@ -324,7 +324,7 @@ async def test_stats_need_public_username(database, settings):
 
 FACTS = (
     "Tay — чат-бот компании Microsoft, запущенный в Twitter 23 марта 2016 года. Его отключили через 16 часов "
-    "после запуска. https://en.wikipedia.org/wiki/Tay_(chatbot)"
+    "после запуска. https://spectrum.ieee.org/tay"
 )
 
 
@@ -332,15 +332,15 @@ async def test_fact_post_is_written_from_backlog_facts(tg, llm):
     card = await say_and_wait_card(tg, "/gen fact")
     assert "А знали ли вы?" in card["text"]
     prompt = next(user for _, user in llm.calls if "<facts>" in user)
-    assert "обыграл профессионального игрока" in prompt and "https://en.wikipedia.org/wiki/OpenAI_Five" in prompt
+    source = "https://openai.com/index/openai-five-defeats-dota-2-world-champions"
+    assert "дважды подряд обыграла команду OG" in prompt and source in prompt
+    assert "Название источника: блог OpenAI" in prompt
     assert "<material>" in llm.calls[-1][1]  # и сверен с теми же фактами
     async with db.session() as s:
         draft = (await s.scalars(select(Draft))).one()
     assert draft.rubric == "fact" and draft.payload["html"].rstrip().endswith("#EML_didyouknow")
     # заглушка FakeLLM ссылку не ставит — автор видит это в карточке
-    assert any(
-        "нет ссылки на источник: https://en.wikipedia.org/wiki/OpenAI_Five" in w for w in levels(draft.issues, "warn")
-    )
+    assert any(f"нет ссылки на источник: {source}" in w for w in levels(draft.issues, "warn"))
     assert not draft.has_errors
 
 
@@ -363,6 +363,49 @@ async def test_fact_topics_need_facts_and_a_link(tg, database):
             await generator.add_topic(s, "fact", "Без фактов")
     card = await say_and_wait_card(tg, f"/gen fact Свой факт | {FACTS}")
     assert "Свой факт" in card["text"]
+
+
+async def test_wikipedia_is_not_accepted_as_a_source(tg, database, tmp_path):
+    wiki = FACTS.replace("https://spectrum.ieee.org/tay", "https://ru.wikipedia.org/wiki/Tay")
+    for command in (f"/add fact Из Википедии | {wiki}", f"/gen fact Из Википедии | {wiki}"):
+        tg.user_message(ADMIN, command)
+        await tg.wait_for(lambda: "Википедия как источник не принимается" in last_text(tg))
+    path = tmp_path / "backlog.yaml"
+    path.write_text(
+        "fact:\n  - {title: Вики, facts: 'Кто, когда и что произошло, подробно.', source: 'https://en.wikipedia.org/wiki/X'}\n",
+        encoding="utf-8",
+    )
+    async with db.session() as s:
+        assert await generator.sync_backlog(s, path) == 0
+        assert (await s.scalars(select(Topic).where(Topic.title.in_(("Вики", "Из Википедии"))))).all() == []
+    assert generator.weak_source("Источник: https://en.m.wikipedia.org/wiki/X") and not generator.weak_source(FACTS)
+
+
+async def test_backlog_refreshes_facts_of_a_known_topic(database, tmp_path):
+    path = tmp_path / "backlog.yaml"
+    item = "fact:\n  - {{title: Тема, facts: '{facts}', source: 'https://example.org/a', source_name: Музей}}\n"
+    path.write_text(item.format(facts="Первая версия фактов, подробно: кто, когда и что."), encoding="utf-8")
+    async with db.session() as s:
+        assert await generator.sync_backlog(s, path) == 1
+        path.write_text(item.format(facts="Исправленные факты, подробно: кто, когда и что."), encoding="utf-8")
+        assert await generator.sync_backlog(s, path) == 0
+        topic = await s.scalar(select(Topic).where(Topic.title == "Тема"))
+        assert topic.notes == (
+            "Исправленные факты, подробно: кто, когда и что.\nИсточник: https://example.org/a\nНазвание источника: Музей"
+        )
+
+
+def test_fact_backlog_uses_primary_sources_only():
+    import yaml
+
+    from app.config import DATA_DIR
+
+    items = yaml.safe_load((DATA_DIR / "backlog.yaml").read_text(encoding="utf-8"))["fact"]
+    assert len(items) >= 10
+    for item in items:
+        notes = f"{item['facts']}\nИсточник: {item['source']}"
+        assert not generator.weak_source(notes), item["title"]
+        assert item["source_name"] and len(item["facts"]) > 300 and len(item["title"]) <= 100
 
 
 async def test_backlog_sync_skips_fact_topics_without_source(database, tmp_path):
