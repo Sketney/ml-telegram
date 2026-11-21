@@ -96,10 +96,14 @@ async def test_lessons_go_in_order_with_link_to_previous_and_toc(tg, llm):
     assert tg.messages[int(toc_id)]["text"] == toc["text"] and int(toc_id) != lesson_id
     assert tg.sent("pinChatMessage")[0]["message_id"] == toc_id
 
+    # вместе с публикацией урока бот готовит к нему квиз — дожидаемся его карточки, чтобы не спутать со следующей
+    await tg.wait_for(
+        lambda: any("Квиз к уроку: выйдет вечером" in m.get("text", "") for m in tg.sent("sendMessage", ADMIN))
+    )
     second_card = await say_and_wait_card(tg, "/gen course")
     assert LESSON_2 in second_card["text"]
     async with db.session() as s:
-        second = (await s.scalars(select(Draft).order_by(Draft.id.desc()))).first()
+        second = (await s.scalars(select(Draft).where(Draft.rubric == "course").order_by(Draft.id.desc()))).first()
     assert f'Предыдущий урок: <a href="{lesson_url}">{LESSON_1}</a>\n#EML_course' in second.payload["html"]
 
     tg.press(ADMIN, second_card, tg.buttons(second_card)["✅ Сейчас"])
