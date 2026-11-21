@@ -65,6 +65,13 @@ SHEET_MAX_ROWS = 9
 # Ярлык-рубрикатор в начале абзаца: «<b>Как работает:</b> …», «🧠 <b>Где встретишь:</b> …»
 _LABEL_RE = re.compile(r"^(?:\S{1,4} )?<(?:b|strong)>([^<\n]{2,40}):</(?:b|strong)>", re.MULTILINE)
 AUTHOR_LABELS = ("Мой опыт", "Моё мнение")  # блок автора подписан намеренно
+# Пост рассказывает читателю про источник, а не про тему: «команды в источнике нет», «в карточке не указано».
+_SOURCE_META_RE = re.compile(
+    r"[^.!?\n]*\b(?:в|из)\s+(?:источнике|записи|карточке|readme|доступном\s+(?:мне\s+)?тексте)\b[^.!?\n]{0,60}?"
+    r"\b(?:нет|не\s+указан\w*|не\s+сказано|не\s+назван\w*|ничего\s+не)\b[^.!?\n]*"
+    r"|[^.!?\n]*\bтекст\s+обрезан\b[^.!?\n]*",
+    re.IGNORECASE,
+)
 
 
 _PRE_RE = re.compile(r"<pre>.*?</pre>", re.DOTALL)
@@ -197,6 +204,10 @@ def validate_post_html(
             issue("warn", "формула стоит посреди предложения: по стайлгайду — словами или отдельной строкой в <pre>")
         )
 
+    meta = _SOURCE_META_RE.search(_TAG_RE.sub("", html))
+    if meta:
+        shown = meta.group(0).strip()[:90]
+        issues.append(issue("warn", f"пост говорит про источник, а не про тему: «{shown}». Лучше убрать фразу"))
     labels = [m for m in _LABEL_RE.findall(html) if m.strip() not in AUTHOR_LABELS]
     if len(labels) >= 2:
         shown = ", ".join(f"«{m.strip()}:»" for m in labels[:3])

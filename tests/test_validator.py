@@ -111,3 +111,22 @@ def test_formula_in_the_middle_of_a_sentence_is_flagged():
         "<pre>оценка = w1 * x1 + b</pre>\n\n<code>y = k * x + b</code>"
     )
     assert not any("формула" in w for w in levels(validate_post_html(fine), "warn"))
+
+
+def test_talk_about_the_source_is_flagged():
+    body = "<b>Заголовок поста</b>\n\n" + "Обычный абзац про инструмент и его работу. " * 8
+    for phrase in (
+        "Команды установки в записи нет, поэтому я её не привожу.",
+        "Число параметров в карточке не указано.",
+        "Разбор сделан по началу статьи, текст обрезан.",
+        "Установочной команды в источнике нет, поэтому иди в репозиторий.",
+    ):
+        warns = levels(validate_post_html(body + "\n\n" + phrase), "warn")
+        assert any("говорит про источник" in w for w in warns), phrase
+    for phrase in (
+        "В статье сравнивают два метода.",
+        "Лицензию проверь в репозитории.",
+        "В карточке модели заявлен контекст 1M.",
+    ):
+        warns = levels(validate_post_html(body + "\n\n" + phrase), "warn")
+        assert not any("говорит про источник" in w for w in warns), phrase
