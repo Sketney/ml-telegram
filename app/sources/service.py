@@ -24,6 +24,9 @@ log = logging.getLogger(__name__)
 RANK_BATCH = 40  # материалов в одном запросе к модели
 RANK_MAX_BATCHES = 4  # на рубрику за один запуск: потолок расходов при первом сборе
 GROUNDING_LIMIT = 15000  # символов текста источника в промпте
+PAPER_LIMIT = 60000  # статье нужен весь основной текст: метод и ограничения стоят не в начале
+PAPER_MIN_BODY = 3000  # короче — это не текст статьи, а заглушка или страница ошибки
+_REFERENCES_RE = re.compile(r"^\s*(References|Bibliography)\s*$", re.MULTILINE)
 _FRONT_MATTER_RE = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
 
 
@@ -194,9 +197,17 @@ async def item_for_topic(session: AsyncSession, topic_id: int | None) -> SourceI
 # --- текст-опора для генерации ---------------------------------------------------
 
 
-def _clip(text: str) -> str:
+def _clip(text: str, limit: int = GROUNDING_LIMIT) -> str:
     text = text.strip()
-    return text if len(text) <= GROUNDING_LIMIT else text[:GROUNDING_LIMIT].rstrip() + "\n[текст обрезан]"
+    return text if len(text) <= limit else text[:limit].rstrip() + "\n[текст обрезан]"
+
+
+def _paper_body(body: str) -> str:
+    """Текст статьи без списка литературы и приложений: они съедают лимит и для разбора не нужны."""
+    cut = None
+    for m in _REFERENCES_RE.finditer(body):
+        cut = m.start()
+    return body[:cut].rstrip() if cut and cut > PAPER_MIN_BODY else body
 
 
 async def grounding_for(item: SourceItem) -> tuple[str, str]:
@@ -208,8 +219,10 @@ async def grounding_for(item: SourceItem) -> tuple[str, str]:
     try:
         if item.source == "hf_papers" and meta.get("arxiv_id"):
             body = html_to_text(await fetch_text(f"https://arxiv.org/html/{meta['arxiv_id']}"))
-            if len(body) > 3000:
-                return _clip(f"Аннотация:\n{item.summary}\n\nТекст статьи:\n{body}"), "аннотация и начало текста статьи"
+            if len(body) > PAPER_MIN_BODY:
+                text = _clip(f"Аннотация:\n{item.summary}\n\nТекст статьи:\n{_paper_body(body)}", PAPER_LIMIT)
+                clipped = text.endswith("[текст обрезан]")
+                return text, "аннотация и текст статьи без концовки" if clipped else "аннотация и текст статьи"
         elif item.source == "hf_models" and meta.get("model_id"):
             readme = await fetch_text(f"https://huggingface.co/{meta['model_id']}/raw/main/README.md")
             readme = clean_markdown(_FRONT_MATTER_RE.sub("", readme))

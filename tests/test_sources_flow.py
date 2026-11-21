@@ -256,3 +256,13 @@ async def test_thin_source_is_refused(tg, collected, monkeypatch):
         item = (await s.scalars(select(SourceItem).where(SourceItem.rubric == "release"))).one()
         assert item.status == ItemStatus.OFFERED.value
     assert tg.llm.calls[-1][1].startswith("Рубрика:")  # до модели дошла только оценка, генерация не запускалась
+
+
+def test_paper_body_drops_references_and_keeps_short_pages():
+    body = "Введение\n" + "текст статьи. " * 400 + "\nReferences\n[1] Кто-то. Что-то.\nAppendix A\nтаблицы"
+    cut = service._paper_body(body)
+    assert cut.endswith("текст статьи.") and "Appendix" not in cut
+    # слово в середине фразы и заголовок в самом начале страницы концом статьи не считаются
+    assert service._paper_body("See References below.\n" + "x " * 3000) == "See References below.\n" + "x " * 3000
+    assert service._paper_body("References\n" + "y " * 3000).startswith("References")
+    assert service._clip("a" * 50, 10).endswith("[текст обрезан]") and service._clip("a" * 50) == "a" * 50
