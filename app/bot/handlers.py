@@ -14,7 +14,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
-from app import db, generator, metrics, moderation
+from app import course, db, generator, metrics, moderation
 from app import transcribe as stt
 from app.bot.cards import STATUS_LABELS, DraftAction, card_text, draft_keyboard, draft_placeholders, send_card
 from app.bot.digest import ItemAction, send_digest, without_item
@@ -69,6 +69,7 @@ WEAK_SOURCE_HINT = (
     "авторов, блог компании или лаборатории, музей, научный журнал, профильное издание. "
     "И оставь в фактах только то, что есть на этой странице."
 )
+LESSON_HINT = "Квиз к уроку курса готовится сам, как только урок одобрен или опубликован."
 SERIES_HINT = (
     "Уроки курса идут по программе из data/course.yaml, свою тему сюда добавить нельзя.\n"
     "/gen {rubric} — черновик следующего урока."
@@ -84,6 +85,8 @@ def split_facts(text: str) -> tuple[str, str]:
 def other_source_hint(rubric: str) -> str | None:
     """Подсказка для рубрик, которые не берут темы из бэклога."""
     source = load_rubrics()[rubric].source
+    if source == "lesson":
+        return LESSON_HINT
     return FEED_HINT if source == "feed" else NOTES_HINT.format(rubric=rubric) if source == "notes" else None
 
 
@@ -511,6 +514,8 @@ def build_router(admin_id: int) -> Router:
                 return
             # действие изменило статус — обновляем карточку
             await cb.message.edit_text(await card_text(s, draft), parse_mode="HTML", reply_markup=draft_keyboard(draft))
+            if action in ("ok", "pub"):
+                await lesson_quiz(bot, cb.message.chat.id, s, settings, llm, draft)
 
     # --- ввод после «Править» и «С комментарием» -----------------------------
 
@@ -584,6 +589,23 @@ def build_router(admin_id: int) -> Router:
         await message.answer("Не понял. /help — список команд.")
 
     return router
+
+
+async def lesson_quiz(bot: Bot, chat_id: int, s, settings: Settings, llm: LLM, lesson: Draft) -> None:
+    """Урок курса одобрен — сразу готовим к нему квиз «Проверь себя», чтобы автор успел его посмотреть."""
+    for key, rubric in load_rubrics().items():
+        if rubric.follows != lesson.rubric:
+            continue
+        try:
+            if await course.ensure_quiz_topic(s, key) is None:
+                continue
+            await bot.send_message(chat_id, "Готовлю квиз к этому уроку…")
+            quiz = await generator.generate_draft(s, llm, settings, key)
+        except Exception as e:  # квиз — дополнение: его сбой не должен мешать уроку
+            log.exception("квиз к уроку не получился")
+            await bot.send_message(chat_id, f"Квиз к уроку не получился: {e}. Попробую ещё раз в плановую подготовку.")
+            continue
+        await send_card(bot, chat_id, s, quiz, note="Квиз к уроку: выйдет вечером в день урока.")
 
 
 async def _retire_card(cb: CallbackQuery, note: str) -> None:

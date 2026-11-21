@@ -154,14 +154,21 @@ async def fill_placeholder(session: AsyncSession, draft: Draft, placeholder: str
 
 
 async def next_approved(session: AsyncSession, rubrics: str | tuple[str, ...]) -> Draft | None:
-    """Самый давно одобренный черновик из перечисленных рубрик."""
+    """Самый давно одобренный черновик из перечисленных рубрик.
+
+    Квиз к уроку курса ждёт, пока выйдет сам урок: раньше урока проверять нечего.
+    """
     keys = (rubrics,) if isinstance(rubrics, str) else tuple(rubrics)
-    return await session.scalar(
+    approved = await session.scalars(
         select(Draft)
         .where(Draft.rubric.in_(keys), Draft.status == DraftStatus.APPROVED.value)
         .order_by(Draft.approved_at, Draft.id)
-        .limit(1)
     )
+    for draft in approved.all():
+        if get_rubric(draft.rubric).follows and not await course.quiz_lesson_published(session, draft):
+            continue
+        return draft
+    return None
 
 
 async def count_in_work(session: AsyncSession, rubric: str) -> int:

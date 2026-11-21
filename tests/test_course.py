@@ -5,9 +5,10 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from app import course, db, generator
+from app import course, db, generator, moderation
 from app.models import Draft, DraftStatus, KeyValue, Topic, TopicStatus
 from app.rubrics import build_system_prompt
+from app.scheduler import Schedule, Slot, prepare_job, publish_slot_job
 from tests.conftest import ADMIN, CHANNEL
 from tests.test_sources_flow import last_text, say_and_wait_card
 
@@ -159,3 +160,77 @@ def author_blocks_off_then_on(request):
     off = {key: build_system_prompt(key, "🧠") for key in ("tool", "release")}
     request.getfixturevalue("author_blocks")
     return off, {key: build_system_prompt(key, "🧠") for key in ("tool", "release")}
+
+
+# --- квиз «Проверь себя» к уроку -------------------------------------------------------------
+
+
+async def quiz_drafts() -> list[Draft]:
+    async with db.session() as s:
+        return list((await s.scalars(select(Draft).where(Draft.rubric == "course_quiz").order_by(Draft.id))).all())
+
+
+async def test_approved_lesson_gets_a_quiz_that_waits_for_the_lesson(tg, llm, settings):
+    moderation.set_slotted_rubrics({"course", "course_quiz"})
+    lesson_card = await say_and_wait_card(tg, "/gen course")
+    tg.press(ADMIN, lesson_card, tg.buttons(lesson_card)["🕒 В расписание"])
+    await tg.wait_for(
+        lambda: any("Квиз к уроку: выйдет вечером" in m.get("text", "") for m in tg.sent("sendMessage", ADMIN))
+    )
+    assert any("Готовлю квиз к этому уроку" in m["text"] for m in tg.sent("sendMessage", ADMIN))
+
+    (quiz,) = await quiz_drafts()
+    assert quiz.payload["kind"] == "quiz" and quiz.payload["question"].startswith("Урок 1, проверь себя. ")
+    prompt = next(user for system, user in llm.calls if "Рубрика «Проверь себя»" in system)
+    assert f"Урок: {LESSON_1}" in prompt and "Обычная программа: правила пишет человек" in prompt
+    assert "Текст урока, который прочитал читатель:" in prompt and "<lesson>" in prompt
+    async with db.session() as s:
+        assert (await s.get(Topic, quiz.topic_id)).title == f"Проверь себя: {LESSON_1}"
+
+    quiz_card = tg.last_card(ADMIN)
+    tg.press(ADMIN, quiz_card, tg.buttons(quiz_card)["🕒 В расписание"])
+    await tg.wait_for(lambda: "в очереди на публикацию" in tg.messages[quiz_card["message_id"]]["text"])
+
+    # вечерний слот квиза пришёл раньше, чем вышел урок: квиз ждёт
+    await publish_slot_job(tg.bot, settings, "course_quiz")
+    assert tg.sent("sendPoll", CHANNEL) == []
+    await tg.wait_for(lambda: any("Слот «Проверь себя» пропущен" in m["text"] for m in tg.sent("sendMessage", ADMIN)))
+
+    await publish_slot_job(tg.bot, settings, "course")  # утренний слот: вышел урок
+    await publish_slot_job(tg.bot, settings, "course_quiz")  # вечерний: теперь выходит и квиз
+    (poll,) = tg.sent("sendPoll", CHANNEL)
+    assert poll["question"].startswith("Урок 1, проверь себя. ")
+    assert len(await quiz_drafts()) == 1  # публикация урока второй квиз не породила
+
+
+async def test_prepare_job_makes_the_quiz_if_it_was_missed(tg, llm, settings):
+    schedule = Schedule(18, 0, 1, (Slot("tue", 19, 0, ("course_quiz",)),))
+    await prepare_job(tg.bot, settings, llm, schedule)  # урока ещё нет — квиза тоже, и бот об этом молчит
+    assert await quiz_drafts() == [] and tg.sent("sendMessage", ADMIN) == []
+
+    async with db.session() as s:
+        lesson = await generator.generate_draft(s, llm, settings, "course")
+        lesson.status = DraftStatus.APPROVED.value
+        await s.commit()
+    await prepare_job(tg.bot, settings, llm, schedule)
+    (quiz,) = await quiz_drafts()
+    assert quiz.status == DraftStatus.PENDING.value
+    await prepare_job(tg.bot, settings, llm, schedule)  # повторно не готовит
+    assert len(await quiz_drafts()) == 1
+
+
+async def test_rejected_quiz_is_not_made_again_and_cannot_be_requested(tg, llm, settings):
+    schedule = Schedule(18, 0, 1, (Slot("tue", 19, 0, ("course_quiz",)),))
+    async with db.session() as s:
+        lesson = await generator.generate_draft(s, llm, settings, "course")
+        lesson.status = DraftStatus.APPROVED.value
+        await s.commit()
+    await prepare_job(tg.bot, settings, llm, schedule)
+    card = tg.last_card(ADMIN)
+    tg.press(ADMIN, card, tg.buttons(card)["❌ Отклонить"])
+    await tg.wait_for(lambda: "отклонён" in tg.messages[card["message_id"]]["text"])
+    await prepare_job(tg.bot, settings, llm, schedule)
+    assert len(await quiz_drafts()) == 1  # к этому уроку квиза не будет
+
+    tg.user_message(ADMIN, "/gen course_quiz")
+    await tg.wait_for(lambda: "готовится сам" in last_text(tg))

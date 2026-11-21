@@ -32,6 +32,8 @@ class Rubric:
     author_block: str = ""
     # Рубрика-курс: уроки идут по программе из data/course.yaml, а не из бэклога.
     series: bool = False
+    # Квиз к уроку курса: ключ рубрики-курса, за уроками которой он идёт (source: lesson).
+    follows: str = ""
 
 
 @lru_cache
@@ -43,7 +45,7 @@ def load_rubrics(path: str | None = None) -> dict[str, Rubric]:
         if kind not in ("post", "quiz", "sheet"):
             raise ValueError(f"rubrics.yaml: у {key} неизвестный kind={kind}")
         source = cfg.get("source", "backlog")
-        if source not in ("backlog", "feed", "notes"):
+        if source not in ("backlog", "feed", "notes", "lesson"):
             raise ValueError(f"rubrics.yaml: у {key} неизвестный source={source}")
         rubrics[key] = Rubric(
             key=key,
@@ -57,6 +59,7 @@ def load_rubrics(path: str | None = None) -> dict[str, Rubric]:
             cover=kind == "post" and bool(cfg.get("cover", True)),
             author_block=str(cfg.get("author_block") or "").strip(),
             series=bool(cfg.get("series", False)),
+            follows=str(cfg.get("follows") or "").strip(),
         )
     return rubrics
 

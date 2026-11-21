@@ -17,6 +17,7 @@ slots:
   # Так рубрики чередуются сами: неопубликованный черновик ждёт следующего слота, новый пока не готовится.
   - { day: mon, time: "10:00", rubrics: [concept, interview] }
   - { day: tue, time: "10:00", rubric: course }   # курс «ML с нуля»: один урок в неделю
+  - { day: tue, time: "19:00", rubric: course_quiz }   # вечером — квиз «Проверь себя» по утреннему уроку
   - { day: wed, time: "10:00", rubrics: [paper, experiment, practice] }
   - { day: thu, time: "10:00", rubric: quiz }
   - { day: fri, time: "10:00", rubrics: [cheatsheet, history] }

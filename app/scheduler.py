@@ -12,7 +12,7 @@ from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app import db, generator, metrics, moderation
+from app import course, db, generator, metrics, moderation
 from app.bot.cards import send_card
 from app.bot.digest import send_digest
 from app.config import Settings
@@ -98,18 +98,21 @@ async def _notify(bot: Bot, settings: Settings, text: str) -> None:
 async def prepare_job(bot: Bot, settings: Settings, llm: LLM, schedule: Schedule) -> None:
     """Для каждой рубрики по бэклогу из расписания держит buffer черновиков в работе."""
     for rubric_key in schedule.rubrics:
-        if get_rubric(rubric_key).source != "backlog":
+        rubric = get_rubric(rubric_key)
+        if rubric.source not in ("backlog", "lesson"):
             continue  # рубрики по источникам автор запускает сам из дайджеста
-        title = get_rubric(rubric_key).title
+        title = rubric.title
         async with db.session() as s:
             try:
+                if rubric.follows:  # квиз к уроку: тема появляется, когда урок одобрен
+                    await course.ensure_quiz_topic(s, rubric_key)
                 missing = schedule.buffer - await moderation.count_in_work(s, rubric_key)
                 for _ in range(max(0, missing)):
                     draft = await generator.generate_draft(s, llm, settings, rubric_key)
                     await send_card(bot, settings.admin_id, s, draft, note="Плановый черновик к ближайшему слоту.")
             except generator.NoTopics:
-                if get_rubric(rubric_key).series:
-                    continue  # курс дописан до конца программы: напоминать об этом каждый день незачем
+                if rubric.series or rubric.follows:
+                    continue  # курс дописан или урок ещё не одобрен: напоминать об этом каждый день незачем
                 await _notify(bot, settings, f"«{title}»: в бэклоге закончились темы. Добавь: /add {rubric_key} тема")
             except Exception as e:
                 log.exception("подготовка черновика %s не удалась", rubric_key)

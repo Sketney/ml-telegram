@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from html import escape
+from html import escape, unescape
 from pathlib import Path
 
 import yaml
@@ -23,6 +23,9 @@ log = logging.getLogger(__name__)
 
 TITLE_LIMIT = 50
 _NUMBER_RE = re.compile(r"^Урок (\d+)\. ")
+QUIZ_PREFIX = "Проверь себя: "
+_TAG_RE = re.compile(r"<[^>]+>")
+LESSON_TEXT_LIMIT = 4000
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,92 @@ def load_course(path: str | Path | None = None) -> Course:
 def lesson_number(topic_title: str) -> int | None:
     found = _NUMBER_RE.match(topic_title or "")
     return int(found.group(1)) if found else None
+
+
+def quiz_title(lesson_topic_title: str) -> str:
+    return QUIZ_PREFIX + lesson_topic_title
+
+
+def quiz_lesson_title(quiz_topic_title: str) -> str:
+    """Название урока, к которому относится квиз."""
+    return (quiz_topic_title or "").removeprefix(QUIZ_PREFIX)
+
+
+async def _lesson_draft(session: AsyncSession, lesson_rubric: str, lesson_topic_title: str) -> Draft | None:
+    """Последний одобренный или вышедший черновик урока."""
+    return await session.scalar(
+        select(Draft)
+        .join(Topic, Topic.id == Draft.topic_id)
+        .where(
+            Draft.rubric == lesson_rubric,
+            Topic.title == lesson_topic_title,
+            Draft.status.in_((DraftStatus.APPROVED.value, DraftStatus.PUBLISHED.value)),
+        )
+        .order_by(Draft.id.desc())
+        .limit(1)
+    )
+
+
+async def ensure_quiz_topic(session: AsyncSession, quiz_rubric: str) -> Topic | None:
+    """Заводит тему квиза для самого свежего одобренного или вышедшего урока, если её ещё нет.
+
+    Квизы к старым урокам задним числом не готовятся: проверять себя есть смысл в день урока.
+    """
+    lesson_rubric = get_rubric(quiz_rubric).follows
+    rows = await session.execute(
+        select(Topic.title)
+        .join(Draft, Draft.topic_id == Topic.id)
+        .where(
+            Draft.rubric == lesson_rubric,
+            Draft.status.in_((DraftStatus.APPROVED.value, DraftStatus.PUBLISHED.value)),
+        )
+    )
+    lessons = [title for (title,) in rows.all() if lesson_number(title) is not None]
+    if not lessons:
+        return None
+    title = quiz_title(max(lessons, key=lesson_number))
+    if await session.scalar(select(Topic).where(Topic.rubric == quiz_rubric, Topic.title == title)):
+        return None
+    topic = Topic(rubric=quiz_rubric, title=title)
+    session.add(topic)
+    await session.commit()
+    return topic
+
+
+async def quiz_prompt_block(session: AsyncSession, quiz_rubric: str, quiz_topic_title: str) -> str:
+    """Данные для квиза: тезисы урока и текст поста, который прочитал читатель."""
+    lesson_title = quiz_lesson_title(quiz_topic_title)
+    lesson = load_course().by_number(lesson_number(lesson_title))
+    draft = await _lesson_draft(session, get_rubric(quiz_rubric).follows, lesson_title)
+    if lesson is None or draft is None:
+        raise LookupError(f"нет одобренного урока «{lesson_title}»: квиз писать не по чему")
+    text = unescape(_TAG_RE.sub("", draft.payload.get("html") or ""))[:LESSON_TEXT_LIMIT]
+    return "\n".join(
+        [
+            "<lesson>",
+            f"Урок: {lesson.topic_title}",
+            "Тезисы урока:",
+            lesson.covers,
+            "Текст урока, который прочитал читатель:",
+            text,
+            "</lesson>",
+        ]
+    )
+
+
+def quiz_question_prefix(quiz_topic_title: str) -> str:
+    n = lesson_number(quiz_lesson_title(quiz_topic_title))
+    return f"Урок {n}, проверь себя. " if n else ""
+
+
+async def quiz_lesson_published(session: AsyncSession, quiz_draft: Draft) -> bool:
+    """Вышел ли урок, к которому относится квиз: раньше урока квиз публиковать нельзя."""
+    topic = await session.get(Topic, quiz_draft.topic_id) if quiz_draft.topic_id else None
+    if topic is None:
+        return True
+    lesson_rubric = get_rubric(quiz_draft.rubric).follows
+    n = lesson_number(quiz_lesson_title(topic.title))
+    return n in await published(session, lesson_rubric)
 
 
 async def sync(session: AsyncSession, rubric_key: str, course: Course | None = None) -> int:

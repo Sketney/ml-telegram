@@ -227,7 +227,7 @@ def build_payload(data: dict, rubric: Rubric, settings: Settings, nav: str = "")
                 options.append(SHOW_ANSWER_OPTION)
         return {
             "kind": "quiz",
-            "question": str(data.get("question") or "").strip(),
+            "question": nav + str(data.get("question") or "").strip(),  # nav у квиза к уроку — «Урок N, проверь себя.»
             "options": options,
             "correct_index": data.get("correct_index"),
             "explanation": str(data.get("explanation") or "").strip(),
@@ -375,6 +375,12 @@ async def _prompt_and_material(
     previous: dict | None = None,
 ) -> tuple[str, str | None]:
     """Запрос к модели и материал, с которым потом сверяется готовый пост (None — сверять не с чем)."""
+    if rubric.follows:
+        try:
+            block = await course.quiz_prompt_block(session, rubric.key, title)
+        except LookupError as e:
+            raise GenerationFailed(str(e)) from None
+        return build_user_prompt(title, comment=comment, previous=previous, lesson=block), None
     if rubric.series:
         program = course.load_course()
         lesson = program.by_number(course.lesson_number(title))
@@ -481,7 +487,12 @@ async def _finish(
 
 
 async def _series_nav(session: AsyncSession, settings: Settings, rubric: Rubric, title: str) -> tuple[str, str]:
-    """Для урока курса: строка со ссылкой на предыдущий урок и замечание, если его ещё нет в канале."""
+    """Для урока курса: строка со ссылкой на предыдущий урок и замечание, если его ещё нет в канале.
+
+    Для квиза к уроку — начало вопроса с номером урока.
+    """
+    if rubric.follows:
+        return course.quiz_question_prefix(title), ""
     if not rubric.series:
         return "", ""
     return await course.nav_html(session, settings, rubric.key, title)
