@@ -101,3 +101,13 @@ def test_label_openers_are_flagged_but_author_block_is_not():
     assert any("начинаются с ярлыков" in w and "«Если коротко:»" in w for w in warns)
     story = "<b>Заголовок: тема</b>\n\n<b>Эмбеддинг</b> — это вектор.\n\n<b>Мой опыт:</b> запускал.\n\n<b>Моё мнение:</b> годится."
     assert not any("ярлыков" in w for w in levels(validate_post_html(story), "warn"))
+
+
+def test_formula_in_the_middle_of_a_sentence_is_flagged():
+    inline = "<b>Заголовок</b>\n\nВеса чуть сдвигаются: <code>w += lr * (y - y_pred) * x</code>. Дальше текст."
+    assert any("формула стоит посреди предложения" in w for w in levels(validate_post_html(inline), "warn"))
+    fine = (
+        "<b>Заголовок</b>\n\nКаждый <code>nn.Linear</code> — потомок перцептрона, запуск через <code>--port 8080</code>.\n\n"
+        "<pre>оценка = w1 * x1 + b</pre>\n\n<code>y = k * x + b</code>"
+    )
+    assert not any("формула" in w for w in levels(validate_post_html(fine), "warn"))

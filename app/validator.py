@@ -7,6 +7,7 @@ warn  — можно, но автору стоит посмотреть.
 from __future__ import annotations
 
 import re
+from html import unescape
 from html.parser import HTMLParser
 
 TG_TEXT_LIMIT = 4096
@@ -64,6 +65,22 @@ SHEET_MAX_ROWS = 9
 # Ярлык-рубрикатор в начале абзаца: «<b>Как работает:</b> …», «🧠 <b>Где встретишь:</b> …»
 _LABEL_RE = re.compile(r"^(?:\S{1,4} )?<(?:b|strong)>([^<\n]{2,40}):</(?:b|strong)>", re.MULTILINE)
 AUTHOR_LABELS = ("Мой опыт", "Моё мнение")  # блок автора подписан намеренно
+
+
+_PRE_RE = re.compile(r"<pre>.*?</pre>", re.DOTALL)
+_CODE_RE = re.compile(r"<code[^>]*>(.*?)</code>", re.DOTALL)
+_OPERATOR_RE = re.compile(r"\s(?:[-+*/]?=|[+*/·×−])\s")  # « = », « += », « * »: выражение, а не имя
+
+
+def _inline_formulas(html: str) -> list[str]:
+    """Выражения в <code> внутри предложения. Короткие имена (nn.Linear, --port) формулами не считаются."""
+    found = []
+    for line in _PRE_RE.sub("", html).splitlines():
+        for code in _CODE_RE.findall(line):
+            alone = line.strip() in (f"<code>{code}</code>",)
+            if not alone and _OPERATOR_RE.search(unescape(code)):
+                found.append(code)
+    return found
 
 
 def issue(level: str, text: str) -> dict:
@@ -174,6 +191,11 @@ def validate_post_html(
     for phrase in STOP_PHRASES:
         if phrase in low:
             issues.append(issue("warn", f"стоп-фраза из стайлгайда: «{phrase}»"))
+
+    if _inline_formulas(html):
+        issues.append(
+            issue("warn", "формула стоит посреди предложения: по стайлгайду — словами или отдельной строкой в <pre>")
+        )
 
     labels = [m for m in _LABEL_RE.findall(html) if m.strip() not in AUTHOR_LABELS]
     if len(labels) >= 2:
