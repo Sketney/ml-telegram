@@ -38,6 +38,21 @@ concept:
   - Reasoning-модели и «время на подумать»
   - Chunking в RAG
   - Reranker
+  # По разделам шпаргалки Stanford CME 295 (github.com/afshinea/stanford-cme-295-transformers-large-language-models)
+  - Подсловная токенизация и BPE
+  - Специальные токены — BOS, PAD, UNK, CLS
+  - Косинусное сходство
+  - ANN — приближённый поиск ближайших соседей
+  - Multi-head attention (несколько голов внимания)
+  - Позиционные эмбеддинги и RoPE
+  - Энкодер и декодер — чем BERT отличается от GPT
+  - Авторегрессивная генерация — почему модель пишет по одному токену
+  - Три этапа обучения LLM — pretraining, fine-tuning, preference tuning
+  - Chain-of-Thought (цепочка рассуждений)
+  - DPO (Direct Preference Optimization)
+  - LLM-as-a-Judge (LLM в роли судьи)
+  - ReAct (Reason + Act)
+  - Flash Attention
 
 history:
   - Перцептрон Розенблатта и обещания 1958 года
@@ -114,6 +129,15 @@ cheatsheet:
   - Что проверить, если LLM отвечает медленно
   - Способы снизить галлюцинации
   - Векторные базы данных — pgvector, Qdrant, Milvus, Chroma
+  # По разделам шпаргалки Stanford CME 295 (github.com/afshinea/stanford-cme-295-transformers-large-language-models)
+  - Типы токенизаторов — слово, подслово, байт — плюсы и минусы
+  - Архитектуры трансформеров — encoder-only, decoder-only, encoder-decoder
+  - Три этапа обучения LLM — что происходит на каждом
+  - Искажения LLM-судьи — позиция, многословие, самопохвала и как их лечить
+  - Приёмы рассуждения в промпте — CoT, ToT, self-consistency
+  - ReAct по шагам — наблюдение, план, действие
+  - Как удешевляют инференс LLM — MoE, дистилляция, квантизация
+  - Как ускоряют attention — sparse, low-rank, Flash Attention
 
 # «А знали ли вы?»: у каждой темы — проверенные факты (facts), ссылка (source) и название источника (source_name).
 # Пост пишется только по фактам, поэтому в facts должно быть всё, что нужно для истории: кто, когда, что произошло.
